@@ -62,7 +62,65 @@ function parseExcelPaste(raw) {
   return items;
 }
 
-// ─── GUILLOTINE PACKING (1 pallet, dynamic size) ─────────────────────────────
+// ─── SPACE GEOMETRY ───────────────────────────────────────────────────────────
+// FIX: Subtract placed box from a space → returns non-overlapping sub-spaces.
+// Replaces guillotine split which created OVERLAPPING sub-spaces, causing
+// multiple boxes to be placed at identical coordinates (bug repro: BOX-7 and
+// BOX-8 both ended up at (50,50,0)).
+function subtractBox(space, box) {
+  const EPS = 0.01;
+  const ax = space.x, ay = space.y, az = space.z;
+  const aX = ax + space.w, aY = ay + space.h, aZ = az + space.d;
+  const bx = box.x, by = box.y, bz = box.z;
+  const bX = bx + box.w, bY = by + box.h, bZ = bz + box.d;
+
+  if (bX <= ax + EPS || bx >= aX - EPS ||
+      bY <= ay + EPS || by >= aY - EPS ||
+      bZ <= az + EPS || bz >= aZ - EPS) {
+    return [space];
+  }
+
+  const result = [];
+  // Slice along X
+  if (bx > ax + 0.5) result.push({ x:ax, y:ay, z:az, w:bx - ax, h:space.h, d:space.d });
+  if (aX > bX + 0.5) result.push({ x:bX, y:ay, z:az, w:aX - bX, h:space.h, d:space.d });
+  // Slice along Y within X-overlap
+  const xMin = Math.max(ax, bx), xMax = Math.min(aX, bX);
+  if (xMax > xMin + 0.5) {
+    if (by > ay + 0.5) result.push({ x:xMin, y:ay, z:az, w:xMax - xMin, h:by - ay, d:space.d });
+    if (aY > bY + 0.5) result.push({ x:xMin, y:bY, z:az, w:xMax - xMin, h:aY - bY, d:space.d });
+    // Slice along Z within X+Y overlap
+    const yMin = Math.max(ay, by), yMax = Math.min(aY, bY);
+    if (yMax > yMin + 0.5) {
+      if (bz > az + 0.5) result.push({ x:xMin, y:yMin, z:az, w:xMax - xMin, h:yMax - yMin, d:bz - az });
+      if (aZ > bZ + 0.5) result.push({ x:xMin, y:yMin, z:bZ, w:xMax - xMin, h:yMax - yMin, d:aZ - bZ });
+    }
+  }
+  return result.filter(s => s.w > 0.5 && s.h > 0.5 && s.d > 0.5);
+}
+
+function pruneContainedSpaces(spaces) {
+  const result = [];
+  for (let i = 0; i < spaces.length; i++) {
+    const s = spaces[i];
+    let contained = false;
+    for (let j = 0; j < spaces.length; j++) {
+      if (i === j) continue;
+      const o = spaces[j];
+      if (s.x >= o.x - 0.01 && s.y >= o.y - 0.01 && s.z >= o.z - 0.01 &&
+          s.x + s.w <= o.x + o.w + 0.01 &&
+          s.y + s.h <= o.y + o.h + 0.01 &&
+          s.z + s.d <= o.z + o.d + 0.01 &&
+          (s.w * s.h * s.d) < (o.w * o.h * o.d) - 0.01) {
+        contained = true; break;
+      }
+    }
+    if (!contained) result.push(s);
+  }
+  return result;
+}
+
+// ─── PACKING (1 pallet) ──────────────────────────────────────────────────────
 function packOnePallet(items, PW, PH, PD) {
   let spaces = [{ x:0, y:0, z:0, w:PW, h:PH, d:PD }];
   const packed = [];
@@ -86,12 +144,13 @@ function packOnePallet(items, PW, PH, PD) {
     }
     if (bestSi===-1) continue;
     const sp=spaces[bestSi]; const {w,h,d}=bestRot;
-    packed.push({ ...item, x:sp.x, y:sp.y, z:sp.z, w, h, d });
-    spaces.splice(bestSi,1);
-    if (sp.w-w>0.5) spaces.push({ x:sp.x+w, y:sp.y,   z:sp.z,   w:sp.w-w, h:sp.h,   d:sp.d   });
-    if (sp.h-h>0.5) spaces.push({ x:sp.x,   y:sp.y+h, z:sp.z,   w:sp.w,   h:sp.h-h, d:sp.d   });
-    if (sp.d-d>0.5) spaces.push({ x:sp.x,   y:sp.y,   z:sp.z+d, w:w,      h:h,      d:sp.d-d });
-    spaces = spaces.filter(s=>s.w>0.5&&s.h>0.5&&s.d>0.5);
+    const placed = { x:sp.x, y:sp.y, z:sp.z, w, h, d };
+    packed.push({ ...item, ...placed });
+
+    // FIX: Subtract placed box from ALL spaces (not just split chosen one)
+    const newSpaces = [];
+    for (const s of spaces) newSpaces.push(...subtractBox(s, placed));
+    spaces = pruneContainedSpaces(newSpaces);
   }
   const ids = new Set(packed.map(p=>p.id));
   return { packed, unpacked: items.filter(it=>!ids.has(it.id)) };
@@ -109,21 +168,41 @@ function packAllItems(items, palletDim) {
     pallets.push({ packed, overflow:[] });
     remaining = unpacked;
   }
+
+  // FIX: CHW dùng ACTUAL bounding box của kiện đã xếp trên mỗi pallet,
+  // KHÔNG phải thể tích full pallet. Nếu chỉ chiếm 1/3 pallet thì CHW = 1/3 đó.
+  let totalActualItemVolume = 0;
+  let totalBoundingVolume   = 0;
+  pallets.forEach(p => {
+    if (p.packed.length === 0) { p.boundingBox = { w:0, h:0, d:0 }; p.boundingVolume = 0; return; }
+    let maxX = 0, maxY = 0, maxZ = 0;
+    for (const b of p.packed) {
+      if (b.x + b.w > maxX) maxX = b.x + b.w;
+      if (b.y + b.h > maxY) maxY = b.y + b.h;
+      if (b.z + b.d > maxZ) maxZ = b.z + b.d;
+    }
+    p.boundingBox = { w: maxX, h: maxY, d: maxZ };
+    p.boundingVolume = maxX * maxY * maxZ;
+    totalBoundingVolume += p.boundingVolume;
+    for (const b of p.packed) totalActualItemVolume += b.w * b.h * b.d;
+  });
+
   const totalWeight = items.reduce((s,i)=>s+i.weight,0);
-  const totalVol    = items.reduce((s,i)=>s+i.width*i.height*i.depth,0);
-  const palletVol   = PW*PH*PD;
-  const dimWeight   = (palletVol*Math.max(pallets.length,1))/VOL_DIVISOR;
-  const cw          = Math.max(totalWeight,dimWeight);
-  const utilization = ((totalVol/(palletVol*Math.max(pallets.length,1)))*100).toFixed(1);
+  const dimWeight   = totalBoundingVolume / VOL_DIVISOR;
+  const cw          = Math.max(totalWeight, dimWeight);
+  // Stack density = actual items / bounding box (độ chặt của khối hàng)
+  const utilization = totalBoundingVolume > 0
+    ? ((totalActualItemVolume / totalBoundingVolume) * 100).toFixed(1)
+    : "0.0";
   const totalPacked = pallets.reduce((s,p)=>s+p.packed.length,0);
-  // Build lookup map: itemId → { palletIndex, item }
+
   const lookup = {};
   pallets.forEach((p,pi)=>p.packed.forEach(item=>{ lookup[item.id]={ palletIndex:pi, palletNum:pi+1, item }; }));
-  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, lookup, palletDim };
+  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, lookup, palletDim, totalBoundingVolume };
 }
 
 // ─── 3D VIEWER ────────────────────────────────────────────────────────────────
-function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, palletDim }) {
+function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, palletDim, boundingBox }) {
   const mountRef = useRef(null);
   const camRef   = useRef({ theta:0.7, phi:1.05, radius:290, zoom:1, dragging:false, px:0, py:0 });
   const rafRef   = useRef(null);
@@ -150,7 +229,7 @@ function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, p
     sun.position.set(200,350,200); sun.castShadow=true; sun.shadow.mapSize.set(1024,1024); scene.add(sun);
     scene.add(new THREE.HemisphereLight(0x334455,0x221100,0.45));
 
-    // Pallet wireframe
+    // Pallet wireframe (red)
     const palletGeo = new THREE.BoxGeometry(PW,PH,PD);
     const palletCenter = new THREE.Vector3(PW/2,PH/2,PD/2);
     const wire = new THREE.LineSegments(new THREE.EdgesGeometry(palletGeo), new THREE.LineBasicMaterial({ color:0xD32F2F }));
@@ -158,11 +237,20 @@ function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, p
     const shell = new THREE.Mesh(palletGeo, new THREE.MeshBasicMaterial({ color:0xD32F2F, transparent:true, opacity:0.025, side:THREE.BackSide }));
     shell.position.copy(palletCenter); scene.add(shell);
 
+    // NEW: Bounding box wireframe (green dashed) — hiển thị CHW dimensions
+    if (boundingBox && boundingBox.w > 0) {
+      const bbGeo = new THREE.BoxGeometry(boundingBox.w, boundingBox.h, boundingBox.d);
+      const bbMat = new THREE.LineDashedMaterial({ color:0x10B981, dashSize:3, gapSize:2 });
+      const bbWire = new THREE.LineSegments(new THREE.EdgesGeometry(bbGeo), bbMat);
+      bbWire.position.set(boundingBox.w/2, boundingBox.h/2, boundingBox.d/2);
+      bbWire.computeLineDistances();
+      scene.add(bbWire);
+    }
+
     // Floor
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(PW,PD), new THREE.MeshStandardMaterial({ color:0x181818, roughness:1 }));
     floor.rotation.x=-Math.PI/2; floor.position.set(PW/2,0,PD/2); floor.receiveShadow=true; scene.add(floor);
 
-    // Boxes — highlight logic
     packedItems.forEach((item,idx)=>{
       if (item.w<=0||item.h<=0||item.d<=0) return;
       const isHighlighted = highlightId && item.id===highlightId;
@@ -185,7 +273,6 @@ function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, p
       );
       edgeMesh.position.copy(pos); scene.add(edgeMesh);
 
-      // Glow ring for highlighted item
       if (isHighlighted) {
         const glowGeo = new THREE.BoxGeometry(item.w+2, item.h+2, item.d+2);
         const glowMesh = new THREE.Mesh(glowGeo, new THREE.MeshBasicMaterial({ color:0xD32F2F, transparent:true, opacity:0.25, side:THREE.BackSide }));
@@ -193,7 +280,6 @@ function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, p
       }
     });
 
-    // Camera orbit
     const cx=PW/2, cy=PH*0.42, cz=PD/2;
     const updateCam=()=>{
       const {theta,phi,radius,zoom}=camRef.current, r=radius*zoom;
@@ -221,9 +307,13 @@ function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, p
       scene.traverse(obj=>{ if(obj.geometry) obj.geometry.dispose(); if(obj.material){ if(Array.isArray(obj.material)) obj.material.forEach(m=>m.dispose()); else obj.material.dispose(); } });
       renderer.dispose();
     };
-  }, [packedItems, highlightId, PW, PH, PD]);
+  }, [packedItems, highlightId, PW, PH, PD, boundingBox]);
 
   const cs=camRef.current;
+  const bbText = boundingBox && boundingBox.w > 0
+    ? `BBox: ${boundingBox.w.toFixed(0)}×${boundingBox.d.toFixed(0)}×${boundingBox.h.toFixed(0)}cm`
+    : "";
+
   return (
     <div style={{ position:"relative", width:"100%", height:"100%" }}>
       <div ref={mountRef} style={{ width:"100%", height:"100%", cursor:"grab" }} />
@@ -240,8 +330,12 @@ function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, p
           </button>
         ))}
       </div>
-      <div style={{ position:"absolute",bottom:0,left:0,right:0,padding:"8px 14px",background:"rgba(15,15,15,0.65)",backdropFilter:"blur(4px)",borderTop:"1px solid #2C2C2C",display:"flex",gap:16,flexWrap:"wrap" }}>
+      <div style={{ position:"absolute",bottom:0,left:0,right:0,padding:"8px 14px",background:"rgba(15,15,15,0.65)",backdropFilter:"blur(4px)",borderTop:"1px solid #2C2C2C",display:"flex",gap:16,flexWrap:"wrap",alignItems:"center" }}>
         {highlightId && <div style={{ display:"flex",alignItems:"center",gap:6 }}><div style={{ width:9,height:9,background:"#fff",boxShadow:"0 0 6px #D32F2F" }}/><span style={{ fontFamily:"'Space Grotesk'",fontSize:9,color:"#fff",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700 }}>Highlighted: {highlightId}</span></div>}
+        {bbText && <div style={{ display:"flex",alignItems:"center",gap:5 }}>
+          <div style={{ width:14,height:2,background:"#10B981",boxShadow:"0 0 3px #10B981" }}/>
+          <span style={{ fontFamily:"'Space Grotesk'",fontSize:9,color:"#10B981",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700 }}>{bbText}</span>
+        </div>}
         {[["#e53935","Heavy"],["#42a5f5","Standard"],["#66bb6a","Light"]].map(([c,l])=>(
           <div key={l} style={{ display:"flex",alignItems:"center",gap:5 }}>
             <div style={{ width:9,height:9,background:c }}/><span style={{ fontFamily:"'Space Grotesk'",fontSize:9,color:"#999",textTransform:"uppercase",letterSpacing:"0.1em" }}>{l}</span>
@@ -270,18 +364,17 @@ function StatCard({ label, value, sub, icon, bar }) {
   );
 }
 
-// ─── SAMPLE ───────────────────────────────────────────────────────────────────
+// ─── SAMPLE (9 boxes 50×50×50 — reproduces the bug fix) ───────────────────────
 const SAMPLE = `ID, Width, Height, Depth, Weight
-BOX-001, 40, 30, 20, 25
-BOX-002, 50, 40, 30, 18
-BOX-003, 35, 25, 25, 30
-BOX-004, 60, 20, 40, 12
-BOX-005, 30, 35, 30, 22
-BOX-006, 45, 45, 35, 35
-BOX-007, 25, 20, 20, 8
-BOX-008, 55, 30, 45, 28
-BOX-009, 40, 25, 30, 15
-BOX-010, 30, 60, 30, 10`;
+BOX-001, 50, 50, 50, 25
+BOX-002, 50, 50, 50, 18
+BOX-003, 50, 50, 50, 30
+BOX-004, 50, 50, 50, 12
+BOX-005, 50, 50, 50, 22
+BOX-006, 50, 50, 50, 35
+BOX-007, 50, 50, 50, 8
+BOX-008, 50, 50, 50, 28
+BOX-009, 50, 50, 50, 15`;
 
 // ─── WAREHOUSE SCAN TAB ───────────────────────────────────────────────────────
 function ScanTab({ result, onJumpToPallet }) {
@@ -308,7 +401,6 @@ function ScanTab({ result, onJumpToPallet }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:16, padding:"20px 16px", flex:1, overflow:"auto" }}>
 
-      {/* Scan input */}
       <div style={{ background:"#1E1E1E", border:"1px solid #2C2C2C" }}>
         <div style={{ background:"#2C2C2C", padding:"8px 14px", display:"flex", alignItems:"center", gap:10 }}>
           <span className="material-symbols-outlined" style={{ fontSize:16, color:"#D32F2F" }}>qr_code_scanner</span>
@@ -342,7 +434,6 @@ function ScanTab({ result, onJumpToPallet }) {
         </div>
       </div>
 
-      {/* Not found */}
       {notFound && (
         <div style={{ background:"#1a0f0f", border:"1px solid #D32F2F", padding:"20px 24px", display:"flex", alignItems:"center", gap:14 }}>
           <span className="material-symbols-outlined" style={{ fontSize:32, color:"#D32F2F" }}>search_off</span>
@@ -353,12 +444,9 @@ function ScanTab({ result, onJumpToPallet }) {
         </div>
       )}
 
-      {/* Found result */}
       {scanResult && (
         <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-          {/* Big result card */}
           <div style={{ background:"#1E1E1E", border:"2px solid #D32F2F", padding:"24px", position:"relative", overflow:"hidden" }}>
-            {/* Glow effect */}
             <div style={{ position:"absolute", top:0, right:0, width:120, height:120, background:"radial-gradient(circle, rgba(211,47,47,0.15), transparent 70%)", pointerEvents:"none" }} />
 
             <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:16 }}>
@@ -372,7 +460,6 @@ function ScanTab({ result, onJumpToPallet }) {
               </div>
             </div>
 
-            {/* Info grid */}
             <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginTop:20 }}>
               {[
                 ["Vị trí X", `${scanResult.item.x.toFixed(0)} cm`, "arrow_right_alt"],
@@ -392,7 +479,6 @@ function ScanTab({ result, onJumpToPallet }) {
               ))}
             </div>
 
-            {/* Jump to 3D button */}
             <button onClick={() => onJumpToPallet(scanResult.palletIndex, scanResult.item.id)}
               style={{ marginTop:16, width:"100%", background:"transparent", border:"1px solid #D32F2F", color:"#D32F2F", padding:"10px 0", cursor:"pointer", fontFamily:"'Space Grotesk'", fontWeight:700, fontSize:11, textTransform:"uppercase", letterSpacing:"0.14em", display:"flex", alignItems:"center", justifyContent:"center", gap:8, transition:"all .2s" }}
               onMouseEnter={e=>{e.currentTarget.style.background="#D32F2F";e.currentTarget.style.color="#fff";}}
@@ -402,7 +488,6 @@ function ScanTab({ result, onJumpToPallet }) {
             </button>
           </div>
 
-          {/* Instruction */}
           <div style={{ background:"#121212", border:"1px solid #2C2C2C", padding:"14px 16px", display:"flex", gap:12, alignItems:"flex-start" }}>
             <span className="material-symbols-outlined" style={{ fontSize:20, color:"#42a5f5", flexShrink:0 }}>info</span>
             <div style={{ fontFamily:"'Inter'", fontSize:12, color:"#888", lineHeight:1.6 }}>
@@ -415,7 +500,6 @@ function ScanTab({ result, onJumpToPallet }) {
         </div>
       )}
 
-      {/* Recent scans placeholder */}
       {!scanResult && !notFound && result && (
         <div style={{ background:"#1E1E1E", border:"1px solid #2C2C2C" }}>
           <div style={{ background:"#2C2C2C", padding:"7px 14px" }}>
@@ -448,7 +532,6 @@ export default function App() {
   const [tab,         setTab]         = useState("dashboard");
   const [highlightId, setHighlight]   = useState(null);
 
-  // Pallet type state
   const [presetIdx,   setPresetIdx]   = useState(0);
   const [customW,     setCustomW]     = useState(120);
   const [customH,     setCustomH]     = useState(160);
@@ -491,7 +574,6 @@ export default function App() {
       <style>{`*{box-sizing:border-box;}::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#121212}::-webkit-scrollbar-thumb{background:#2C2C2C}::-webkit-scrollbar-thumb:hover{background:#D32F2F}`}</style>
       <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#121212", color:"#f9dcd9", fontFamily:"'Inter',sans-serif" }}>
 
-        {/* ── SIDEBAR ── */}
         <aside style={{ width:228, flexShrink:0, background:"#1E1E1E", borderRight:"1px solid #2C2C2C", display:"flex", flexDirection:"column" }}>
           <div style={{ padding:"18px 18px 10px" }}>
             <div style={{ fontFamily:"'Space Grotesk'", fontSize:16, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.1em", color:"#fff" }}>3D Optimizer</div>
@@ -515,7 +597,6 @@ export default function App() {
             ))}
           </nav>
 
-          {/* ── Pallet type selector ── */}
           <div style={{ padding:"14px", borderTop:"1px solid #2C2C2C", marginTop:8 }}>
             <div style={{ ...LS, marginBottom:8 }}>Loại Pallet</div>
             {PALLET_PRESETS.map((p,i)=>(
@@ -530,7 +611,6 @@ export default function App() {
               </button>
             ))}
 
-            {/* Custom input */}
             {PALLET_PRESETS[presetIdx]?.custom && (
               <div style={{ marginTop:8, display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
                 {[["W",customW,setCustomW],["H",customH,setCustomH],["D",customD,setCustomD]].map(([label,val,setter])=>(
@@ -545,7 +625,6 @@ export default function App() {
             )}
           </div>
 
-          {/* Pallet switcher */}
           {result && result.pallets.length>1 && (
             <div style={{ padding:"10px 14px", borderTop:"1px solid #2C2C2C" }}>
               <div style={{ ...LS, marginBottom:8 }}>Pallets — {result.pallets.length} tổng</div>
@@ -573,7 +652,6 @@ export default function App() {
           </div>
         </aside>
 
-        {/* ── MAIN ── */}
         <main style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
           <header style={{ height:52,background:"#121212",borderBottom:"1px solid #2C2C2C",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",flexShrink:0 }}>
             <span style={{ fontFamily:"'Space Grotesk'",fontSize:14,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.14em",color:"#fff" }}>
@@ -589,25 +667,20 @@ export default function App() {
             </div>
           </header>
 
-          {/* ── SCAN TAB ── */}
           {tab==="scan" && (
             <ScanTab result={result} onJumpToPallet={handleJumpToPallet} />
           )}
 
-          {/* ── DASHBOARD TAB ── */}
           {tab==="dashboard" && (
             <div style={{ flex:1,overflow:"auto",padding:"14px 16px",display:"flex",flexDirection:"column",gap:14 }}>
-              {/* Stats */}
               <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
                 <StatCard label="Total Items"       icon="inventory_2" value={result?`${result.totalPacked}/${result.totalItems}`:"—"} sub={result?`${result.pallets.length} pallet`:""} />
-                <StatCard label="Chargeable Weight" icon="weight"      value={result?`${result.cw.toFixed(1)}kg`:"—"} sub={result?`Actual: ${result.totalWeight}kg`:""} />
-                <StatCard label="Space Utilization" icon="percent"     value={result?`${result.utilization}%`:"—"} bar={result?+result.utilization:undefined} />
+                <StatCard label="Chargeable Weight" icon="weight"      value={result?`${result.cw.toFixed(1)}kg`:"—"} sub={result?`Dim: ${result.dimWeight.toFixed(1)}kg`:""} />
+                <StatCard label="Stack Density"     icon="percent"     value={result?`${result.utilization}%`:"—"} bar={result?+result.utilization:undefined} sub={result?"of bbox":""} />
                 <StatCard label="Pallet Type"       icon="view_in_ar"  value={result?`${dim.w}×${dim.d}`:"—"} sub={result?`×${dim.h}cm`:""} />
               </div>
 
-              {/* Two columns */}
               <div style={{ display:"grid",gridTemplateColumns:"minmax(280px,390px) 1fr",gap:14,flex:1,minHeight:0 }}>
-                {/* LEFT */}
                 <div style={{ display:"flex",flexDirection:"column",gap:12,minHeight:0 }}>
                   <div style={{ background:"#1E1E1E",border:"1px solid #2C2C2C" }}>
                     <div style={{ background:"#2C2C2C",padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
@@ -635,10 +708,14 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Table */}
                   <div style={{ background:"#1E1E1E",border:"1px solid #2C2C2C",flex:1,display:"flex",flexDirection:"column",overflow:"hidden" }}>
                     <div style={{ background:"#2C2C2C",padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0 }}>
-                      <span style={{ ...LS,color:"#fff" }}>{cur?`Pallet ${activePallet+1} — ${cur.packed.length} kiện`:"Packing Result"}</span>
+                      <span style={{ ...LS,color:"#fff" }}>
+                        {cur?`Pallet ${activePallet+1} — ${cur.packed.length} kiện`:"Packing Result"}
+                        {cur?.boundingBox?.w>0 && <span style={{ color:"#10B981", marginLeft:8 }}>
+                          {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)}
+                        </span>}
+                      </span>
                       {highlightId&&<span style={{ ...LS,color:"#D32F2F" }}>Highlight: {highlightId}</span>}
                     </div>
                     <div style={{ overflowY:"auto",flex:1 }}>
@@ -675,11 +752,10 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* RIGHT: 3D */}
                 <div style={{ background:"#0c0c0c",border:"1px solid #2C2C2C",position:"relative",minHeight:460,overflow:"hidden" }}>
                   {result&&cur&&cur.packed.length>0 ? (
                     <ErrorBoundary key={activePallet}>
-                      <PalletViewer3D key={`${activePallet}-${highlightId}`} packedItems={cur.packed} palletIndex={activePallet} totalPallets={result.pallets.length} highlightId={highlightId} palletDim={dim} />
+                      <PalletViewer3D key={`${activePallet}-${highlightId}`} packedItems={cur.packed} palletIndex={activePallet} totalPallets={result.pallets.length} highlightId={highlightId} palletDim={dim} boundingBox={cur.boundingBox} />
                     </ErrorBoundary>
                   ) : (
                     <div style={{ width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",position:"relative" }}>
