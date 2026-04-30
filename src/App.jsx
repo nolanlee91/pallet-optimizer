@@ -29,14 +29,15 @@ class ErrorBoundary extends Component {
   }
 }
 
-// ─── PALLET PRESETS ───────────────────────────────────────────────────────────
+// ─── PALLET PRESETS (cm — quy đổi từ 48×40×61 in và 43×43×61 in) ─────────────
 const PALLET_PRESETS = [
-  { label: "Standard — 120×120×160cm", w: 120, h: 160, d: 120 },
-  { label: "Euro     — 100×120×160cm", w: 100, h: 160, d: 120 },
-  { label: "Nhập tay...",               w:   0, h:   0, d:   0, custom: true },
+  { label: "GMA    — 122×102×155 cm", w: 122, h: 155, d: 102 },
+  { label: "Square — 109×109×155 cm", w: 109, h: 155, d: 109 },
+  { label: "Nhập tay...",              w:   0, h:   0, d:   0, custom: true },
 ];
 
 const VOL_DIVISOR = 6000;
+const DEFAULT_GAP = 1.5; // cm — khoảng hở ngang giữa các kiện (1–2cm để công nhân kê tay)
 const BOX_COLORS = [
   "#e53935","#42a5f5","#66bb6a","#ffa726","#ab47bc",
   "#26c6da","#d4e157","#ec407a","#8d6e63","#ff7043",
@@ -120,8 +121,26 @@ function pruneContainedSpaces(spaces) {
   return result;
 }
 
+// ─── SUPPORT CHECK ────────────────────────────────────────────────────────────
+// Tỉ lệ diện tích đáy được đỡ — kiện trên sàn (y≈0) luôn 100%, kiện cao hơn
+// phải được kiện bên dưới đỡ ít nhất MIN_SUPPORT (mặc định 0.7) để không bị nghiêng.
+function computeSupport(x, z, w, d, y, packedBoxes) {
+  if (y < 0.01) return 1.0;
+  const area = w * d;
+  if (area < 0.001) return 0;
+  let supported = 0;
+  for (const b of packedBoxes) {
+    if (Math.abs((b.y + b.h) - y) > 0.5) continue;
+    const ox1 = Math.max(x, b.x), ox2 = Math.min(x + w, b.x + b.w);
+    const oz1 = Math.max(z, b.z), oz2 = Math.min(z + d, b.z + b.d);
+    if (ox2 > ox1 && oz2 > oz1) supported += (ox2 - ox1) * (oz2 - oz1);
+  }
+  return supported / area;
+}
+
 // ─── PACKING (1 pallet) ──────────────────────────────────────────────────────
-function packOnePallet(items, PW, PH, PD) {
+function packOnePallet(items, PW, PH, PD, gap = 0) {
+  const MIN_SUPPORT = 0.7;
   let spaces = [{ x:0, y:0, z:0, w:PW, h:PH, d:PD }];
   const packed = [];
   for (const item of items) {
@@ -133,23 +152,33 @@ function packOnePallet(items, PW, PH, PD) {
       { w:item.depth,  h:item.width,  d:item.height },
       { w:item.depth,  h:item.height, d:item.width  },
     ];
-    let bestSi=-1, bestRot=null, bestScore=Infinity;
+    // Hai bộ "best": có support và fallback không support
+    let bestSi=-1,   bestRot=null,   bestScore=Infinity;
+    let bestSiFb=-1, bestRotFb=null, bestScoreFb=Infinity;
     for (let si=0; si<spaces.length; si++) {
       const sp = spaces[si];
       for (const rot of rots) {
         if (rot.w>sp.w+0.01||rot.h>sp.h+0.01||rot.d>sp.d+0.01) continue;
-        const score = sp.y*1e8 + sp.x*1e4 + sp.z;
-        if (score<bestScore) { bestScore=score; bestSi=si; bestRot=rot; }
+        // Vị trí ưu tiên: Y thấp → X thấp → Z thấp; cùng vị trí thì rotation
+        // có chiều cao nhỏ hơn (đáy rộng) thắng — khối hàng ổn định hơn.
+        const score = sp.y*1e8 + sp.x*1e4 + sp.z + rot.h*0.001;
+        if (score < bestScoreFb) { bestScoreFb=score; bestSiFb=si; bestRotFb=rot; }
+        const support = computeSupport(sp.x, sp.z, rot.w, rot.d, sp.y, packed);
+        if (support < MIN_SUPPORT) continue;
+        if (score < bestScore) { bestScore=score; bestSi=si; bestRot=rot; }
       }
     }
-    if (bestSi===-1) continue;
+    if (bestSi === -1) { bestSi = bestSiFb; bestRot = bestRotFb; }
+    if (bestSi === -1) continue;
     const sp=spaces[bestSi]; const {w,h,d}=bestRot;
     const placed = { x:sp.x, y:sp.y, z:sp.z, w, h, d };
     packed.push({ ...item, ...placed });
 
-    // FIX: Subtract placed box from ALL spaces (not just split chosen one)
+    // Subtract với gap ngang (chỉ +X và +Z) — chừa khe để công nhân kê tay;
+    // chiều dọc khít vì kiện chồng trực tiếp lên nhau.
+    const carve = { x:sp.x, y:sp.y, z:sp.z, w:w+gap, h, d:d+gap };
     const newSpaces = [];
-    for (const s of spaces) newSpaces.push(...subtractBox(s, placed));
+    for (const s of spaces) newSpaces.push(...subtractBox(s, carve));
     spaces = pruneContainedSpaces(newSpaces);
   }
   const ids = new Set(packed.map(p=>p.id));
@@ -157,13 +186,17 @@ function packOnePallet(items, PW, PH, PD) {
 }
 
 // ─── MULTI-PALLET ENGINE ──────────────────────────────────────────────────────
-function packAllItems(items, palletDim) {
+function packAllItems(items, palletDim, gap = 0) {
   const { w:PW, h:PH, d:PD } = palletDim;
-  const sorted = [...items].sort((a,b)=>b.weight-a.weight);
+  // Sort theo (weight DESC, volume DESC) — kiện nặng và to xuống dưới trước.
+  const sorted = [...items].sort((a,b) => {
+    if (Math.abs(b.weight - a.weight) > 0.01) return b.weight - a.weight;
+    return (b.width*b.height*b.depth) - (a.width*a.height*a.depth);
+  });
   const pallets=[]; let remaining=sorted, guard=0;
   while (remaining.length>0 && guard<500) {
     guard++;
-    const { packed, unpacked } = packOnePallet(remaining, PW, PH, PD);
+    const { packed, unpacked } = packOnePallet(remaining, PW, PH, PD, gap);
     if (packed.length===0) { pallets.push({ packed:[], overflow:remaining }); break; }
     pallets.push({ packed, overflow:[] });
     remaining = unpacked;
@@ -197,16 +230,18 @@ function packAllItems(items, palletDim) {
   const totalPacked = pallets.reduce((s,p)=>s+p.packed.length,0);
 
   const lookup = {};
-  pallets.forEach((p,pi)=>p.packed.forEach(item=>{ lookup[item.id]={ palletIndex:pi, palletNum:pi+1, item }; }));
-  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, lookup, palletDim, totalBoundingVolume };
+  pallets.forEach((p,pi)=>p.packed.forEach((item,bi)=>{ lookup[item.id]={ palletIndex:pi, palletNum:pi+1, order:bi+1, item }; }));
+  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, lookup, palletDim, totalBoundingVolume, gap };
 }
 
 // ─── 3D VIEWER ────────────────────────────────────────────────────────────────
 function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, palletDim, boundingBox }) {
   const mountRef = useRef(null);
-  const camRef   = useRef({ theta:0.7, phi:1.05, radius:290, zoom:1, dragging:false, px:0, py:0 });
-  const rafRef   = useRef(null);
   const PW = palletDim.w, PH = palletDim.h, PD = palletDim.d;
+  // Camera radius scales với pallet size (đơn vị thay đổi cm→inch không vỡ view)
+  const SCALE   = Math.max(PW, PD, PH);
+  const camRef  = useRef({ theta:0.7, phi:1.05, radius: SCALE*2.4, zoom:1, dragging:false, px:0, py:0 });
+  const rafRef  = useRef(null);
 
   useEffect(() => {
     const mount = mountRef.current; if (!mount) return;
@@ -226,7 +261,7 @@ function PalletViewer3D({ packedItems, palletIndex, totalPallets, highlightId, p
     const camera = new THREE.PerspectiveCamera(42, W/H, 0.1, 5000);
     scene.add(new THREE.AmbientLight(0xffffff,0.5));
     const sun = new THREE.DirectionalLight(0xffffff,0.9);
-    sun.position.set(200,350,200); sun.castShadow=true; sun.shadow.mapSize.set(1024,1024); scene.add(sun);
+    sun.position.set(SCALE*1.5, SCALE*2.5, SCALE*1.5); sun.castShadow=true; sun.shadow.mapSize.set(1024,1024); scene.add(sun);
     scene.add(new THREE.HemisphereLight(0x334455,0x221100,0.45));
 
     // Pallet wireframe (red)
@@ -364,7 +399,7 @@ function StatCard({ label, value, sub, icon, bar }) {
   );
 }
 
-// ─── SAMPLE (9 boxes 50×50×50 — reproduces the bug fix) ───────────────────────
+// ─── SAMPLE (cm) ──────────────────────────────────────────────────────────────
 const SAMPLE = `ID, Width, Height, Depth, Weight
 BOX-001, 50, 50, 50, 25
 BOX-002, 50, 50, 50, 18
@@ -465,9 +500,10 @@ function ScanTab({ result, onJumpToPallet }) {
                 ["Vị trí X", `${scanResult.item.x.toFixed(0)} cm`, "arrow_right_alt"],
                 ["Vị trí Y (cao)", `${scanResult.item.y.toFixed(0)} cm`, "height"],
                 ["Vị trí Z", `${scanResult.item.z.toFixed(0)} cm`, "arrow_right_alt"],
-                ["Kích thước", `${scanResult.item.w}×${scanResult.item.h}×${scanResult.item.d}cm`, "straighten"],
+                ["Kích thước", `${scanResult.item.w}×${scanResult.item.h}×${scanResult.item.d} cm`, "straighten"],
                 ["Cân nặng", `${scanResult.item.weight} kg`, "weight"],
                 ["Tầng", scanResult.item.y < 40 ? "Tầng 1 (Sàn)" : scanResult.item.y < 90 ? "Tầng 2 (Giữa)" : "Tầng 3 (Trên)", "layers"],
+                ["Thứ tự xếp", `#${scanResult.order ?? "—"}`, "format_list_numbered"],
               ].map(([label, val, icon]) => (
                 <div key={label} style={{ background:"#121212", padding:"12px 14px", border:"1px solid #2C2C2C" }}>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
@@ -492,7 +528,7 @@ function ScanTab({ result, onJumpToPallet }) {
             <span className="material-symbols-outlined" style={{ fontSize:20, color:"#42a5f5", flexShrink:0 }}>info</span>
             <div style={{ fontFamily:"'Inter'", fontSize:12, color:"#888", lineHeight:1.6 }}>
               <strong style={{ color:"#fff" }}>Hướng dẫn xếp:</strong> Đưa kiện <strong style={{ color:"#fff" }}>{scanResult.item.id}</strong> vào{" "}
-              <strong style={{ color:"#D32F2F" }}>Pallet {scanResult.palletNum}</strong>, đặt tại vị trí{" "}
+              <strong style={{ color:"#D32F2F" }}>Pallet {scanResult.palletNum}</strong>{scanResult.order?` (kiện thứ #${scanResult.order})`:""}, đặt tại vị trí{" "}
               X={scanResult.item.x.toFixed(0)}cm, Z={scanResult.item.z.toFixed(0)}cm tính từ góc trái phía trước,{" "}
               cao {scanResult.item.y.toFixed(0)}cm từ sàn pallet.
             </div>
@@ -533,13 +569,14 @@ export default function App() {
   const [highlightId, setHighlight]   = useState(null);
 
   const [presetIdx,   setPresetIdx]   = useState(0);
-  const [customW,     setCustomW]     = useState(120);
-  const [customH,     setCustomH]     = useState(160);
-  const [customD,     setCustomD]     = useState(120);
+  const [customW,     setCustomW]     = useState(122);
+  const [customH,     setCustomH]     = useState(155);
+  const [customD,     setCustomD]     = useState(102);
+  const [gap,         setGap]         = useState(DEFAULT_GAP);
 
   const getPalletDim = () => {
     const p = PALLET_PRESETS[presetIdx];
-    if (p.custom) return { w: +customW||120, h: +customH||160, d: +customD||120 };
+    if (p.custom) return { w: +customW||122, h: +customH||155, d: +customD||102 };
     return { w: p.w, h: p.h, d: p.d };
   };
 
@@ -551,13 +588,13 @@ export default function App() {
         const items = parseExcelPaste(raw);
         if (!items.length) { alert("Không có dữ liệu hợp lệ!\nFormat: ID, Width, Height, Depth, Weight"); setRunning(false); return; }
         const dim = getPalletDim();
-        const res = packAllItems(items, dim);
+        const res = packAllItems(items, dim, Math.max(0, +gap || 0));
         setResult(res); setActive(0); setHighlight(null);
         setTiming(((performance.now()-t0)/1000).toFixed(3));
       } catch(e) { alert("Lỗi: "+e.message); }
       setRunning(false);
     }, 30);
-  }, [raw, presetIdx, customW, customH, customD]);
+  }, [raw, presetIdx, customW, customH, customD, gap]);
 
   const handleJumpToPallet = (palletIndex, itemId) => {
     setActive(palletIndex);
@@ -623,6 +660,16 @@ export default function App() {
                 ))}
               </div>
             )}
+
+            <div style={{ marginTop:12 }}>
+              <div style={{ ...LS, marginBottom:4 }}>Khoảng hở ngang (cm)</div>
+              <input type="number" step="0.5" min="0" value={gap} onChange={e=>setGap(e.target.value)}
+                style={{ width:"100%",background:"#121212",border:"1px solid #2C2C2C",color:"#fff",fontFamily:"monospace",fontSize:11,padding:"6px 8px",outline:"none",transition:"border-color .2s" }}
+                onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"} />
+              <div style={{ fontFamily:"'Inter'", fontSize:10, color:"#555", marginTop:4, lineHeight:1.4 }}>
+                Khe giữa các kiện theo chiều ngang. Chiều cao luôn khít.
+              </div>
+            </div>
           </div>
 
           {result && result.pallets.length>1 && (
@@ -713,7 +760,7 @@ export default function App() {
                       <span style={{ ...LS,color:"#fff" }}>
                         {cur?`Pallet ${activePallet+1} — ${cur.packed.length} kiện`:"Packing Result"}
                         {cur?.boundingBox?.w>0 && <span style={{ color:"#10B981", marginLeft:8 }}>
-                          {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)}
+                          {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)} cm
                         </span>}
                       </span>
                       {highlightId&&<span style={{ ...LS,color:"#D32F2F" }}>Highlight: {highlightId}</span>}
@@ -722,7 +769,7 @@ export default function App() {
                       <table style={{ width:"100%",borderCollapse:"collapse" }}>
                         <thead>
                           <tr style={{ background:"#121212",borderBottom:"1px solid #2C2C2C",position:"sticky",top:0,zIndex:1 }}>
-                            {["Item ID","W×H×D","X,Y,Z","Wt"].map((h,i)=>(<th key={i} style={{ padding:"7px 10px",...LS,textAlign:i>=2?"right":"left" }}>{h}</th>))}
+                            {["#","Item ID","W×H×D","X,Y,Z","Wt"].map((h,i)=>(<th key={i} style={{ padding:"7px 10px",...LS,textAlign:i>=3?"right":"left" }}>{h}</th>))}
                           </tr>
                         </thead>
                         <tbody>
@@ -732,6 +779,7 @@ export default function App() {
                               style={{ borderBottom:"1px solid #191919",transition:"background .1s",background:highlightId===item.id?"#2a1010":"transparent",cursor:"pointer" }}
                               onMouseEnter={e=>{if(highlightId!==item.id)e.currentTarget.style.background="#2a2a2a";}}
                               onMouseLeave={e=>{e.currentTarget.style.background=highlightId===item.id?"#2a1010":"transparent";}}>
+                              <td style={{ padding:"7px 10px",fontSize:10,color:"#D32F2F",fontFamily:"'Space Grotesk'",fontWeight:700 }}>{idx+1}</td>
                               <td style={{ padding:"7px 10px",fontSize:11,color:highlightId===item.id?"#fff":"#ccc",fontWeight:highlightId===item.id?700:600,fontFamily:"'Space Grotesk'" }}>
                                 <span style={{ display:"inline-flex",alignItems:"center",gap:5 }}>
                                   <span style={{ width:7,height:7,background:BOX_COLORS[idx%BOX_COLORS.length],flexShrink:0 }} />
@@ -744,7 +792,7 @@ export default function App() {
                               <td style={{ padding:"7px 10px",fontSize:10,color:"#666",fontFamily:"'Inter'",textAlign:"right" }}>{item.weight}kg</td>
                             </tr>
                           )) : (
-                            <tr><td colSpan={4} style={{ padding:"30px",textAlign:"center",...LS }}>Chạy optimization để xem kết quả</td></tr>
+                            <tr><td colSpan={5} style={{ padding:"30px",textAlign:"center",...LS }}>Chạy optimization để xem kết quả</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -780,7 +828,7 @@ export default function App() {
               <div style={{ width:5,height:5,borderRadius:"50%",background:"#10B981",boxShadow:"0 0 5px rgba(16,185,129,.8)" }} />
             </div>
             <div style={{ display:"flex",gap:14 }}>
-              {result&&<span style={LS}>{result.totalPacked}/{result.totalItems} packed — {result.pallets.length} pallets — {dim.w}×{dim.d}×{dim.h}cm</span>}
+              {result&&<span style={LS}>{result.totalPacked}/{result.totalItems} packed — {result.pallets.length} pallets — {dim.w}×{dim.d}×{dim.h}cm — gap {result.gap?.toFixed(1) ?? "0"}cm</span>}
               {timing&&<span style={LS}>Optimized in {timing}s</span>}
             </div>
           </footer>
