@@ -144,8 +144,13 @@ function computeSupport(x, z, w, d, y, packedBoxes) {
 }
 
 // ─── PACKING (1 pallet) ──────────────────────────────────────────────────────
+// MIN_SUPPORT: đáy được đỡ ≥70% mới ưu tiên đặt — kiện ổn định.
+// FALLBACK_MIN_SUPPORT: nếu không tìm được vị trí nào ≥70%, cho phép đặt ở vị
+// trí có support ≥50% (kê chéo nhẹ, vẫn không trôi). Không cho phép 0% (cantilever
+// floating) — staff không xếp được thực tế.
 function packOnePallet(items, PW, PH, PD, gap = 0) {
   const MIN_SUPPORT = 0.7;
+  const FALLBACK_MIN_SUPPORT = 0.5;
   let spaces = [{ x:0, y:0, z:0, w:PW, h:PH, d:PD }];
   const packed = [];
   for (const item of items) {
@@ -157,9 +162,8 @@ function packOnePallet(items, PW, PH, PD, gap = 0) {
       { w:item.depth,  h:item.width,  d:item.height },
       { w:item.depth,  h:item.height, d:item.width  },
     ];
-    // Hai bộ "best": có support và fallback không support
     let bestSi=-1,   bestRot=null,   bestScore=Infinity;
-    let bestSiFb=-1, bestRotFb=null, bestScoreFb=Infinity;
+    let bestSiFb=-1, bestRotFb=null, bestScoreFb=Infinity, bestSupFb=0;
     for (let si=0; si<spaces.length; si++) {
       const sp = spaces[si];
       for (const rot of rots) {
@@ -167,8 +171,10 @@ function packOnePallet(items, PW, PH, PD, gap = 0) {
         // Vị trí ưu tiên: Y thấp → X thấp → Z thấp; cùng vị trí thì rotation
         // có chiều cao nhỏ hơn (đáy rộng) thắng — khối hàng ổn định hơn.
         const score = sp.y*1e8 + sp.x*1e4 + sp.z + rot.h*0.001;
-        if (score < bestScoreFb) { bestScoreFb=score; bestSiFb=si; bestRotFb=rot; }
         const support = computeSupport(sp.x, sp.z, rot.w, rot.d, sp.y, packed);
+        if (support >= FALLBACK_MIN_SUPPORT && score < bestScoreFb) {
+          bestScoreFb=score; bestSiFb=si; bestRotFb=rot; bestSupFb=support;
+        }
         if (support < MIN_SUPPORT) continue;
         if (score < bestScore) { bestScore=score; bestSi=si; bestRot=rot; }
       }
