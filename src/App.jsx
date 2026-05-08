@@ -68,130 +68,102 @@ function parseExcelPaste(raw, manual = false) {
   return items;
 }
 
-// ─── SPACE GEOMETRY ───────────────────────────────────────────────────────────
-// FIX: Subtract placed box from a space → returns non-overlapping sub-spaces.
-// Replaces guillotine split which created OVERLAPPING sub-spaces, causing
-// multiple boxes to be placed at identical coordinates (bug repro: BOX-7 and
-// BOX-8 both ended up at (50,50,0)).
-function subtractBox(space, box) {
-  const EPS = 0.01;
-  const ax = space.x, ay = space.y, az = space.z;
-  const aX = ax + space.w, aY = ay + space.h, aZ = az + space.d;
-  const bx = box.x, by = box.y, bz = box.z;
-  const bX = bx + box.w, bY = by + box.h, bZ = bz + box.d;
-
-  if (bX <= ax + EPS || bx >= aX - EPS ||
-      bY <= ay + EPS || by >= aY - EPS ||
-      bZ <= az + EPS || bz >= aZ - EPS) {
-    return [space];
-  }
-
-  const result = [];
-  // Slice along X
-  if (bx > ax + 0.5) result.push({ x:ax, y:ay, z:az, w:bx - ax, h:space.h, d:space.d });
-  if (aX > bX + 0.5) result.push({ x:bX, y:ay, z:az, w:aX - bX, h:space.h, d:space.d });
-  // Slice along Y within X-overlap
-  const xMin = Math.max(ax, bx), xMax = Math.min(aX, bX);
-  if (xMax > xMin + 0.5) {
-    if (by > ay + 0.5) result.push({ x:xMin, y:ay, z:az, w:xMax - xMin, h:by - ay, d:space.d });
-    if (aY > bY + 0.5) result.push({ x:xMin, y:bY, z:az, w:xMax - xMin, h:aY - bY, d:space.d });
-    // Slice along Z within X+Y overlap
-    const yMin = Math.max(ay, by), yMax = Math.min(aY, bY);
-    if (yMax > yMin + 0.5) {
-      if (bz > az + 0.5) result.push({ x:xMin, y:yMin, z:az, w:xMax - xMin, h:yMax - yMin, d:bz - az });
-      if (aZ > bZ + 0.5) result.push({ x:xMin, y:yMin, z:bZ, w:xMax - xMin, h:yMax - yMin, d:aZ - bZ });
-    }
-  }
-  return result.filter(s => s.w > 0.5 && s.h > 0.5 && s.d > 0.5);
-}
-
-function pruneContainedSpaces(spaces) {
-  const result = [];
-  for (let i = 0; i < spaces.length; i++) {
-    const s = spaces[i];
-    let contained = false;
-    for (let j = 0; j < spaces.length; j++) {
-      if (i === j) continue;
-      const o = spaces[j];
-      if (s.x >= o.x - 0.01 && s.y >= o.y - 0.01 && s.z >= o.z - 0.01 &&
-          s.x + s.w <= o.x + o.w + 0.01 &&
-          s.y + s.h <= o.y + o.h + 0.01 &&
-          s.z + s.d <= o.z + o.d + 0.01 &&
-          (s.w * s.h * s.d) < (o.w * o.h * o.d) - 0.01) {
-        contained = true; break;
-      }
-    }
-    if (!contained) result.push(s);
-  }
-  return result;
-}
-
-// ─── SUPPORT CHECK ────────────────────────────────────────────────────────────
-// Tỉ lệ diện tích đáy được đỡ — kiện trên sàn (y≈0) luôn 100%, kiện cao hơn
-// phải được kiện bên dưới đỡ ít nhất MIN_SUPPORT (mặc định 0.7) để không bị nghiêng.
-function computeSupport(x, z, w, d, y, packedBoxes) {
-  if (y < 0.01) return 1.0;
-  const area = w * d;
-  if (area < 0.001) return 0;
-  let supported = 0;
-  for (const b of packedBoxes) {
-    if (Math.abs((b.y + b.h) - y) > 0.5) continue;
-    const ox1 = Math.max(x, b.x), ox2 = Math.min(x + w, b.x + b.w);
-    const oz1 = Math.max(z, b.z), oz2 = Math.min(z + d, b.z + b.d);
-    if (ox2 > ox1 && oz2 > oz1) supported += (ox2 - ox1) * (oz2 - oz1);
-  }
-  return supported / area;
-}
-
-// ─── PACKING (1 pallet) ──────────────────────────────────────────────────────
-// MIN_SUPPORT: đáy được đỡ ≥70% mới ưu tiên đặt — kiện ổn định.
-// FALLBACK_MIN_SUPPORT: nếu không tìm được vị trí nào ≥70%, cho phép đặt ở vị
-// trí có support ≥50% (kê chéo nhẹ, vẫn không trôi). Không cho phép 0% (cantilever
-// floating) — staff không xếp được thực tế.
+// ─── PACKING (1 pallet) — heightmap approach ─────────────────────────────────
+// Thay vì quản lý spaces 3D phức tạp, dùng 2D height field: H[x][z] = top hiện
+// tại tại (x,z). Kiện mới tự động "rest" trên max H trong footprint → không bao
+// giờ float. Khoảng trống dưới kiện (overhang) được tính như "không support".
+//
+// MIN_SUPPORT (0.7): đáy được đỡ ≥70% mới ưu tiên — kiện ổn định.
+// FALLBACK_MIN_SUPPORT (0.5): nếu không vị trí nào ≥70%, chấp nhận ≥50% (kê
+// chéo nhẹ vẫn không trôi). Không bao giờ <50% — staff không xếp được thực tế.
 function packOnePallet(items, PW, PH, PD, gap = 0) {
   const MIN_SUPPORT = 0.7;
   const FALLBACK_MIN_SUPPORT = 0.5;
-  let spaces = [{ x:0, y:0, z:0, w:PW, h:PH, d:PD }];
+  const PWi = Math.round(PW), PDi = Math.round(PD);
+  const stride = PWi + 1;
+  const H = new Int16Array(stride * (PDi + 1));
+
   const packed = [];
+  const candKeys = new Set(["0,0"]);
+
   for (const item of items) {
     const rots = [
-      { w:item.width,  h:item.height, d:item.depth  },
-      { w:item.width,  h:item.depth,  d:item.height },
-      { w:item.height, h:item.width,  d:item.depth  },
-      { w:item.height, h:item.depth,  d:item.width  },
-      { w:item.depth,  h:item.width,  d:item.height },
-      { w:item.depth,  h:item.height, d:item.width  },
+      [item.width, item.height, item.depth],
+      [item.width, item.depth,  item.height],
+      [item.height, item.width, item.depth],
+      [item.height, item.depth, item.width],
+      [item.depth, item.width,  item.height],
+      [item.depth, item.height, item.width],
     ];
-    let bestSi=-1,   bestRot=null,   bestScore=Infinity;
-    let bestSiFb=-1, bestRotFb=null, bestScoreFb=Infinity, bestSupFb=0;
-    for (let si=0; si<spaces.length; si++) {
-      const sp = spaces[si];
+    let best = null, bestFb = null;
+
+    for (const key of candKeys) {
+      const [xs, zs] = key.split(",");
+      const x0 = +xs, z0 = +zs;
       for (const rot of rots) {
-        if (rot.w>sp.w+0.01||rot.h>sp.h+0.01||rot.d>sp.d+0.01) continue;
-        // Vị trí ưu tiên: Y thấp → X thấp → Z thấp; cùng vị trí thì rotation
-        // có chiều cao nhỏ hơn (đáy rộng) thắng — khối hàng ổn định hơn.
-        const score = sp.y*1e8 + sp.x*1e4 + sp.z + rot.h*0.001;
-        const support = computeSupport(sp.x, sp.z, rot.w, rot.d, sp.y, packed);
-        if (support >= FALLBACK_MIN_SUPPORT && score < bestScoreFb) {
-          bestScoreFb=score; bestSiFb=si; bestRotFb=rot; bestSupFb=support;
+        const w = rot[0], h = rot[1], d = rot[2];
+        if (x0 + w > PW + 0.01 || z0 + d > PD + 0.01) continue;
+        const wi = Math.round(w), di = Math.round(d);
+        const xi0 = Math.round(x0), zi0 = Math.round(z0);
+
+        // Y = max H trong footprint (kiện nằm trên đỉnh cao nhất)
+        let restY = 0;
+        for (let zi = zi0; zi < zi0 + di; zi++) {
+          const row = zi * stride;
+          for (let xi = xi0; xi < xi0 + wi; xi++) {
+            const v = H[row + xi];
+            if (v > restY) restY = v;
+          }
+        }
+        if (restY + h > PH + 0.01) continue;
+
+        // Support = tỉ lệ cells ở footprint có H == restY (đang đỡ kiện)
+        let supported = 0;
+        for (let zi = zi0; zi < zi0 + di; zi++) {
+          const row = zi * stride;
+          for (let xi = xi0; xi < xi0 + wi; xi++) {
+            if (H[row + xi] === restY) supported++;
+          }
+        }
+        const support = restY === 0 ? 1.0 : supported / (wi * di);
+        const score = restY*1e8 + x0*1e4 + z0 + h*0.001;
+
+        if (support >= FALLBACK_MIN_SUPPORT && (!bestFb || score < bestFb.score)) {
+          bestFb = { x:x0, y:restY, z:z0, w, h, d, score };
         }
         if (support < MIN_SUPPORT) continue;
-        if (score < bestScore) { bestScore=score; bestSi=si; bestRot=rot; }
+        if (!best || score < best.score) {
+          best = { x:x0, y:restY, z:z0, w, h, d, score };
+        }
       }
     }
-    if (bestSi === -1) { bestSi = bestSiFb; bestRot = bestRotFb; }
-    if (bestSi === -1) continue;
-    const sp=spaces[bestSi]; const {w,h,d}=bestRot;
-    const placed = { x:sp.x, y:sp.y, z:sp.z, w, h, d };
-    packed.push({ ...item, ...placed });
 
-    // Subtract với gap ngang (chỉ +X và +Z) — chừa khe để công nhân kê tay;
-    // chiều dọc khít vì kiện chồng trực tiếp lên nhau.
-    const carve = { x:sp.x, y:sp.y, z:sp.z, w:w+gap, h, d:d+gap };
-    const newSpaces = [];
-    for (const s of spaces) newSpaces.push(...subtractBox(s, carve));
-    spaces = pruneContainedSpaces(newSpaces);
+    const chosen = best || bestFb;
+    if (!chosen) continue;
+
+    packed.push({ ...item, x:chosen.x, y:chosen.y, z:chosen.z, w:chosen.w, h:chosen.h, d:chosen.d });
+
+    // Update heightmap
+    const wi = Math.round(chosen.w), di = Math.round(chosen.d);
+    const xi0 = Math.round(chosen.x), zi0 = Math.round(chosen.z);
+    const newTop = chosen.y + chosen.h;
+    const ziMax = Math.min(zi0 + di, PDi + 1);
+    const xiMax = Math.min(xi0 + wi, PWi + 1);
+    for (let zi = zi0; zi < ziMax; zi++) {
+      const row = zi * stride;
+      for (let xi = xi0; xi < xiMax; xi++) {
+        if (H[row + xi] < newTop) H[row + xi] = newTop;
+      }
+    }
+
+    // Thêm candidates ở góc phải, sau, phải-sau (cộng gap ngang)
+    const nx = chosen.x + chosen.w + gap;
+    const nz = chosen.z + chosen.d + gap;
+    if (nx < PW - 0.5) candKeys.add(`${nx},${chosen.z}`);
+    if (nz < PD - 0.5) candKeys.add(`${chosen.x},${nz}`);
+    if (nx < PW - 0.5 && nz < PD - 0.5) candKeys.add(`${nx},${nz}`);
   }
+
   const ids = new Set(packed.map(p=>p.id));
   return { packed, unpacked: items.filter(it=>!ids.has(it.id)) };
 }
