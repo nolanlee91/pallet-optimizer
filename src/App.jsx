@@ -191,13 +191,20 @@ function packOnePallet(items, PW, PH, PD, gap = 0) {
 }
 
 // ─── MULTI-PALLET ENGINE ──────────────────────────────────────────────────────
+// Sort theo (footprint DESC, weight DESC). Kiện đáy bự xuống sàn trước để tile
+// sàn hiệu quả, kiện nhỏ chèn lên trên. Cùng footprint thì nặng xuống dưới.
+// (Weight-first sort cũ làm kiện nhẹ-đáy-bự bị đẩy lên cao → bbox lệch + thêm pallet.)
+function maxFootprint(it) {
+  return Math.max(it.width*it.depth, it.width*it.height, it.height*it.depth);
+}
+function sortPackOrder(a, b) {
+  const fa = maxFootprint(a), fb = maxFootprint(b);
+  if (Math.abs(fb - fa) > 0.5) return fb - fa;
+  return b.weight - a.weight;
+}
 function packAllItems(items, palletDim, gap = 0) {
   const { w:PW, h:PH, d:PD } = palletDim;
-  // Sort theo (weight DESC, volume DESC) — kiện nặng và to xuống dưới trước.
-  const sorted = [...items].sort((a,b) => {
-    if (Math.abs(b.weight - a.weight) > 0.01) return b.weight - a.weight;
-    return (b.width*b.height*b.depth) - (a.width*a.height*a.depth);
-  });
+  const sorted = [...items].sort(sortPackOrder);
   const pallets=[]; let remaining=sorted, guard=0;
   while (remaining.length>0 && guard<500) {
     guard++;
@@ -254,10 +261,7 @@ function packManualGroups(items, palletDim, gap = 0) {
   let totalBoundingVolume = 0;
 
   for (const num of palletNums) {
-    const groupItems = [...groups[num]].sort((a,b) => {
-      if (Math.abs(b.weight - a.weight) > 0.01) return b.weight - a.weight;
-      return (b.width*b.height*b.depth) - (a.width*a.height*a.depth);
-    });
+    const groupItems = [...groups[num]].sort(sortPackOrder);
     const { packed, unpacked } = packOnePallet(groupItems, PW, PH, PD, gap);
     let maxX = 0, maxY = 0, maxZ = 0;
     for (const b of packed) {
