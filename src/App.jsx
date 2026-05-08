@@ -47,18 +47,23 @@ const BOX_COLORS = [
 const LS = { fontFamily:"'Space Grotesk'", fontSize:9, fontWeight:700, color:"#555", textTransform:"uppercase", letterSpacing:"0.13em" };
 
 // ─── PARSER ───────────────────────────────────────────────────────────────────
-function parseExcelPaste(raw) {
+// manual=true → bắt buộc cột thứ 6 là số pallet sếp chỉ định.
+function parseExcelPaste(raw, manual = false) {
   const items = [];
+  const minCols = manual ? 6 : 5;
   for (const line of raw.split("\n")) {
     const t = line.trim(); if (!t) continue;
     const sep = t.includes("\t") ? "\t" : ",";
     const cols = t.split(sep).map(c => c.trim());
-    if (cols.length < 5) continue;
-    const [id, c1, c2, c3, c4] = cols;
+    if (cols.length < minCols) continue;
+    const [id, c1, c2, c3, c4, c5] = cols;
     if (isNaN(+c1) || isNaN(+c2) || isNaN(+c3) || isNaN(+c4)) continue;
+    if (manual && (isNaN(+c5) || +c5 < 1)) continue;
     const w = Math.abs(+c1), h = Math.abs(+c2), d = Math.abs(+c3), wt = Math.abs(+c4);
     if (!w || !h || !d) continue;
-    items.push({ id: id || `BOX-${items.length+1}`, width:w, height:h, depth:d, weight:wt });
+    const item = { id: id || `BOX-${items.length+1}`, width:w, height:h, depth:d, weight:wt };
+    if (manual) item.palletNum = Math.max(1, Math.round(+c5));
+    items.push(item);
   }
   return items;
 }
@@ -231,7 +236,56 @@ function packAllItems(items, palletDim, gap = 0) {
 
   const lookup = {};
   pallets.forEach((p,pi)=>p.packed.forEach((item,bi)=>{ lookup[item.id]={ palletIndex:pi, palletNum:pi+1, order:bi+1, item }; }));
-  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, lookup, palletDim, totalBoundingVolume, gap };
+  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, lookup, palletDim, totalBoundingVolume, gap, mode:"auto" };
+}
+
+// ─── MANUAL MODE — sếp chỉ định pallet, app chỉ tính vị trí trong nhóm ────────
+function packManualGroups(items, palletDim, gap = 0) {
+  const { w:PW, h:PH, d:PD } = palletDim;
+  const groups = {};
+  for (const item of items) {
+    const k = item.palletNum || 1;
+    (groups[k] = groups[k] || []).push(item);
+  }
+  const palletNums = Object.keys(groups).map(Number).sort((a,b)=>a-b);
+
+  const pallets = [];
+  let totalActualItemVolume = 0;
+  let totalBoundingVolume = 0;
+
+  for (const num of palletNums) {
+    const groupItems = [...groups[num]].sort((a,b) => {
+      if (Math.abs(b.weight - a.weight) > 0.01) return b.weight - a.weight;
+      return (b.width*b.height*b.depth) - (a.width*a.height*a.depth);
+    });
+    const { packed, unpacked } = packOnePallet(groupItems, PW, PH, PD, gap);
+    let maxX = 0, maxY = 0, maxZ = 0;
+    for (const b of packed) {
+      if (b.x + b.w > maxX) maxX = b.x + b.w;
+      if (b.y + b.h > maxY) maxY = b.y + b.h;
+      if (b.z + b.d > maxZ) maxZ = b.z + b.d;
+      totalActualItemVolume += b.w * b.h * b.d;
+    }
+    const bbox = { w:maxX, h:maxY, d:maxZ };
+    const bboxVol = maxX * maxY * maxZ;
+    totalBoundingVolume += bboxVol;
+    pallets.push({ packed, overflow: unpacked, boundingBox: bbox, boundingVolume: bboxVol, manualPalletNum: num });
+  }
+
+  const totalWeight = items.reduce((s,i)=>s+i.weight,0);
+  const dimWeight   = totalBoundingVolume / VOL_DIVISOR;
+  const cw          = Math.max(totalWeight, dimWeight);
+  const utilization = totalBoundingVolume > 0
+    ? ((totalActualItemVolume / totalBoundingVolume) * 100).toFixed(1)
+    : "0.0";
+  const totalPacked = pallets.reduce((s,p)=>s+p.packed.length,0);
+  const totalOverflow = pallets.reduce((s,p)=>s+p.overflow.length,0);
+
+  const lookup = {};
+  pallets.forEach((p,pi)=>p.packed.forEach((item,bi)=>{
+    lookup[item.id] = { palletIndex:pi, palletNum:p.manualPalletNum, order:bi+1, item };
+  }));
+  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, totalOverflow, lookup, palletDim, totalBoundingVolume, gap, mode:"manual" };
 }
 
 // ─── 3D VIEWER ────────────────────────────────────────────────────────────────
@@ -411,6 +465,18 @@ BOX-007, 50, 50, 50, 8
 BOX-008, 50, 50, 50, 28
 BOX-009, 50, 50, 50, 15`;
 
+// Sample cho Manual mode — cột thứ 6 là số pallet sếp chỉ định
+const SAMPLE_MANUAL = `ID, Width, Height, Depth, Weight, Pallet
+BOX-001, 50, 50, 50, 25, 1
+BOX-002, 50, 50, 50, 18, 1
+BOX-003, 50, 50, 50, 30, 1
+BOX-004, 50, 50, 50, 12, 2
+BOX-005, 50, 50, 50, 22, 2
+BOX-006, 50, 50, 50, 35, 2
+BOX-007, 50, 50, 50, 8, 3
+BOX-008, 50, 50, 50, 28, 3
+BOX-009, 50, 50, 50, 15, 3`;
+
 // ─── WAREHOUSE SCAN TAB ───────────────────────────────────────────────────────
 function ScanTab({ result, onJumpToPallet }) {
   const [scanInput, setScanInput]   = useState("");
@@ -560,10 +626,14 @@ function ScanTab({ result, onJumpToPallet }) {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [raw,         setRaw]         = useState(SAMPLE);
-  const [result,      setResult]      = useState(null);
+  const [mode,        setMode]        = useState("auto"); // "auto" | "manual"
+  const [rawAuto,     setRawAuto]     = useState(SAMPLE);
+  const [rawManual,   setRawManual]   = useState(SAMPLE_MANUAL);
+  const [resultAuto,  setResultAuto]  = useState(null);
+  const [resultManual,setResultManual]= useState(null);
+  const [timingAuto,  setTimingAuto]  = useState(null);
+  const [timingManual,setTimingManual]= useState(null);
   const [running,     setRunning]     = useState(false);
-  const [timing,      setTiming]      = useState(null);
   const [activePallet,setActive]      = useState(0);
   const [tab,         setTab]         = useState("dashboard");
   const [highlightId, setHighlight]   = useState(null);
@@ -573,6 +643,19 @@ export default function App() {
   const [customH,     setCustomH]     = useState(155);
   const [customD,     setCustomD]     = useState(102);
   const [gap,         setGap]         = useState(DEFAULT_GAP);
+
+  // Derived (theo mode hiện tại)
+  const raw    = mode === "auto" ? rawAuto    : rawManual;
+  const result = mode === "auto" ? resultAuto : resultManual;
+  const timing = mode === "auto" ? timingAuto : timingManual;
+  const updateRaw = (val) => mode === "auto" ? setRawAuto(val) : setRawManual(val);
+
+  const switchMode = (m) => {
+    if (m === mode) return;
+    setMode(m);
+    setActive(0);
+    setHighlight(null);
+  };
 
   const getPalletDim = () => {
     const p = PALLET_PRESETS[presetIdx];
@@ -585,16 +668,26 @@ export default function App() {
     const t0 = performance.now();
     setTimeout(() => {
       try {
-        const items = parseExcelPaste(raw);
-        if (!items.length) { alert("Không có dữ liệu hợp lệ!\nFormat: ID, Width, Height, Depth, Weight"); setRunning(false); return; }
+        const items = parseExcelPaste(raw, mode === "manual");
+        if (!items.length) {
+          alert(mode === "manual"
+            ? "Không có dữ liệu hợp lệ!\nFormat Manual: ID, Width, Height, Depth, Weight, Pallet#"
+            : "Không có dữ liệu hợp lệ!\nFormat: ID, Width, Height, Depth, Weight");
+          setRunning(false); return;
+        }
         const dim = getPalletDim();
-        const res = packAllItems(items, dim, Math.max(0, +gap || 0));
-        setResult(res); setActive(0); setHighlight(null);
-        setTiming(((performance.now()-t0)/1000).toFixed(3));
+        const g = Math.max(0, +gap || 0);
+        const res = mode === "manual"
+          ? packManualGroups(items, dim, g)
+          : packAllItems(items, dim, g);
+        const t = ((performance.now()-t0)/1000).toFixed(3);
+        if (mode === "manual") { setResultManual(res); setTimingManual(t); }
+        else                   { setResultAuto(res);   setTimingAuto(t);   }
+        setActive(0); setHighlight(null);
       } catch(e) { alert("Lỗi: "+e.message); }
       setRunning(false);
     }, 30);
-  }, [raw, presetIdx, customW, customH, customD, gap]);
+  }, [raw, mode, presetIdx, customW, customH, customD, gap]);
 
   const handleJumpToPallet = (palletIndex, itemId) => {
     setActive(palletIndex);
@@ -681,7 +774,7 @@ export default function App() {
                     style={{ padding:"7px 10px",background:activePallet===i&&tab==="dashboard"?"#D32F2F":"#252525",color:"#fff",border:"none",cursor:"pointer",fontFamily:"'Space Grotesk'",fontSize:10,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,textAlign:"left",transition:"background .15s" }}
                     onMouseEnter={e=>{if(!(activePallet===i&&tab==="dashboard"))e.currentTarget.style.background="#333";}}
                     onMouseLeave={e=>{if(!(activePallet===i&&tab==="dashboard"))e.currentTarget.style.background="#252525";}}>
-                    Pallet {i+1} — {p.packed.length} kiện
+                    Pallet {p.manualPalletNum ?? (i+1)} — {p.packed.length} kiện{p.overflow?.length>0?` (+${p.overflow.length} thừa)`:""}
                   </button>
                 ))}
               </div>
@@ -730,23 +823,41 @@ export default function App() {
               <div style={{ display:"grid",gridTemplateColumns:"minmax(280px,390px) 1fr",gap:14,flex:1,minHeight:0 }}>
                 <div style={{ display:"flex",flexDirection:"column",gap:12,minHeight:0 }}>
                   <div style={{ background:"#1E1E1E",border:"1px solid #2C2C2C" }}>
-                    <div style={{ background:"#2C2C2C",padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
-                      <span style={{ ...LS,color:"#fff" }}>Input Data (Excel / CSV Paste)</span>
-                      <span className="material-symbols-outlined" style={{fontSize:13,color:"#555"}}>table_chart</span>
+                    <div style={{ background:"#2C2C2C",padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8 }}>
+                      <span style={{ ...LS,color:"#fff" }}>Input Data</span>
+                      <div style={{ display:"flex" }}>
+                        {[["auto","Auto","App tự xếp"],["manual","Manual","Sếp chỉ định pallet"]].map(([m,label,tip])=>(
+                          <button key={m} onClick={()=>switchMode(m)} title={tip}
+                            style={{ padding:"4px 10px",background:mode===m?"#D32F2F":"transparent",color:mode===m?"#fff":"#888",border:"1px solid "+(mode===m?"#D32F2F":"#3a3a3a"),cursor:"pointer",fontFamily:"'Space Grotesk'",fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",transition:"all .15s" }}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <div style={{ padding:12 }}>
-                      <div style={{ ...LS,marginBottom:6 }}>Format: ID, Width, Height, Depth, Weight (cm / kg)</div>
-                      <textarea value={raw} onChange={e=>setRaw(e.target.value)}
-                        placeholder={"ID, Width, Height, Depth, Weight\nBOX-001, 40, 30, 20, 15"}
+                      <div style={{ ...LS,marginBottom:6 }}>
+                        {mode==="manual"
+                          ? "Format: ID, W, H, D, Weight, Pallet# — sếp chỉ định pallet"
+                          : "Format: ID, Width, Height, Depth, Weight (cm / kg)"}
+                      </div>
+                      <textarea value={raw} onChange={e=>updateRaw(e.target.value)}
+                        placeholder={mode==="manual"
+                          ? "ID, W, H, D, Weight, Pallet#\nBOX-001, 40, 30, 20, 15, 1"
+                          : "ID, Width, Height, Depth, Weight\nBOX-001, 40, 30, 20, 15"}
                         style={{ width:"100%",height:140,background:"#121212",border:"1px solid #2C2C2C",color:"#fff",fontFamily:"monospace",fontSize:11,padding:10,outline:"none",resize:"vertical",lineHeight:1.6,transition:"border-color .2s" }}
                         onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"} />
                       <div style={{ display:"flex",gap:8,marginTop:8 }}>
                         <button onClick={handleOptimize} disabled={running}
                           style={{ flex:1,background:running?"#7a1a1a":"#D32F2F",color:"#fff",border:"none",padding:"9px 0",cursor:running?"wait":"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.14em",transition:"background .2s" }}
                           onMouseEnter={e=>{if(!running)e.currentTarget.style.background="#b52828";}} onMouseLeave={e=>{if(!running)e.currentTarget.style.background="#D32F2F";}}>
-                          {running?"⟳ Computing...":"▶ Run Optimization"}
+                          {running?"⟳ Computing...":`▶ Run ${mode==="manual"?"Manual":"Auto"} Optimization`}
                         </button>
-                        <button onClick={()=>{setRaw("");setResult(null);setTiming(null);setHighlight(null);}}
+                        <button onClick={()=>{
+                          updateRaw("");
+                          if(mode==="manual"){ setResultManual(null); setTimingManual(null); }
+                          else               { setResultAuto(null);   setTimingAuto(null);   }
+                          setHighlight(null);
+                        }}
                           style={{ background:"transparent",border:"1px solid #2C2C2C",color:"#666",padding:"9px 14px",cursor:"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em",transition:"all .2s" }}
                           onMouseEnter={e=>{e.currentTarget.style.background="#1E1E1E";e.currentTarget.style.color="#fff";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="#666";}}>
                           Clear
@@ -756,10 +867,17 @@ export default function App() {
                   </div>
 
                   <div style={{ background:"#1E1E1E",border:"1px solid #2C2C2C",flex:1,display:"flex",flexDirection:"column",overflow:"hidden" }}>
-                    <div style={{ background:"#2C2C2C",padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0 }}>
-                      <span style={{ ...LS,color:"#fff" }}>
-                        {cur?`Pallet ${activePallet+1} — ${cur.packed.length} kiện`:"Packing Result"}
-                        {cur?.boundingBox?.w>0 && <span style={{ color:"#10B981", marginLeft:8 }}>
+                    <div style={{ background:"#2C2C2C",padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0,gap:8 }}>
+                      <span style={{ ...LS,color:"#fff",display:"inline-flex",alignItems:"center",gap:8 }}>
+                        <span style={{ padding:"1px 6px",background:mode==="manual"?"#D32F2F":"#42a5f5",color:"#fff",fontSize:8,fontWeight:700,letterSpacing:"0.12em" }}>
+                          {mode==="manual"?"MANUAL":"AUTO"}
+                        </span>
+                        {cur ? (mode==="manual" && cur.manualPalletNum
+                            ? `Pallet ${cur.manualPalletNum} (sếp) — ${cur.packed.length} kiện`
+                            : `Pallet ${activePallet+1} — ${cur.packed.length} kiện`)
+                          : "Packing Result"}
+                        {cur?.overflow?.length>0 && <span style={{ color:"#ff6b6b" }}>+{cur.overflow.length} thừa</span>}
+                        {cur?.boundingBox?.w>0 && <span style={{ color:"#10B981" }}>
                           {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)} cm
                         </span>}
                       </span>
@@ -827,8 +945,12 @@ export default function App() {
               <span style={LS}>System Status: Nominal</span>
               <div style={{ width:5,height:5,borderRadius:"50%",background:"#10B981",boxShadow:"0 0 5px rgba(16,185,129,.8)" }} />
             </div>
-            <div style={{ display:"flex",gap:14 }}>
-              {result&&<span style={LS}>{result.totalPacked}/{result.totalItems} packed — {result.pallets.length} pallets — {dim.w}×{dim.d}×{dim.h}cm — gap {result.gap?.toFixed(1) ?? "0"}cm</span>}
+            <div style={{ display:"flex",gap:14,alignItems:"center" }}>
+              {result&&<span style={LS}>
+                [{mode.toUpperCase()}] {result.totalPacked}/{result.totalItems} packed
+                {result.totalOverflow>0 && <span style={{ color:"#ff6b6b" }}> — {result.totalOverflow} thừa</span>}
+                {" — "}{result.pallets.length} pallets — {dim.w}×{dim.d}×{dim.h}cm — gap {result.gap?.toFixed(1) ?? "0"}cm
+              </span>}
               {timing&&<span style={LS}>Optimized in {timing}s</span>}
             </div>
           </footer>
