@@ -68,104 +68,104 @@ function parseExcelPaste(raw, manual = false) {
   return items;
 }
 
-// ─── PACKING (1 pallet) — heightmap approach ─────────────────────────────────
-// Thay vì quản lý spaces 3D phức tạp, dùng 2D height field: H[x][z] = top hiện
-// tại tại (x,z). Kiện mới tự động "rest" trên max H trong footprint → không bao
-// giờ float. Khoảng trống dưới kiện (overhang) được tính như "không support".
+// ─── PACKING — heightmap approach ─────────────────────────────────────────────
+// 2D height field H[x][z] = top hiện tại tại (x,z). Kiện mới tự động "rest" trên
+// max H trong footprint → không bao giờ float. Khoảng trống dưới (overhang)
+// được tính như "không support".
 //
 // MIN_SUPPORT (0.7): đáy được đỡ ≥70% mới ưu tiên — kiện ổn định.
 // FALLBACK_MIN_SUPPORT (0.5): nếu không vị trí nào ≥70%, chấp nhận ≥50% (kê
 // chéo nhẹ vẫn không trôi). Không bao giờ <50% — staff không xếp được thực tế.
-function packOnePallet(items, PW, PH, PD, gap = 0) {
-  const MIN_SUPPORT = 0.7;
-  const FALLBACK_MIN_SUPPORT = 0.5;
+
+function newPalletState(PW, PH, PD) {
   const PWi = Math.round(PW), PDi = Math.round(PD);
   const stride = PWi + 1;
-  const H = new Int16Array(stride * (PDi + 1));
+  return {
+    H: new Int16Array(stride * (PDi + 1)),
+    packed: [],
+    candKeys: new Set(["0,0"]),
+    maxY: 0,
+    PWi, PDi, stride, PW, PH, PD,
+  };
+}
 
-  const packed = [];
-  const candKeys = new Set(["0,0"]);
-
-  for (const item of items) {
-    const rots = [
-      [item.width, item.height, item.depth],
-      [item.width, item.depth,  item.height],
-      [item.height, item.width, item.depth],
-      [item.height, item.depth, item.width],
-      [item.depth, item.width,  item.height],
-      [item.depth, item.height, item.width],
-    ];
-    let best = null, bestFb = null;
-
-    for (const key of candKeys) {
-      const [xs, zs] = key.split(",");
-      const x0 = +xs, z0 = +zs;
-      for (const rot of rots) {
-        const w = rot[0], h = rot[1], d = rot[2];
-        if (x0 + w > PW + 0.01 || z0 + d > PD + 0.01) continue;
-        const wi = Math.round(w), di = Math.round(d);
-        const xi0 = Math.round(x0), zi0 = Math.round(z0);
-
-        // Y = max H trong footprint (kiện nằm trên đỉnh cao nhất)
-        let restY = 0;
-        for (let zi = zi0; zi < zi0 + di; zi++) {
-          const row = zi * stride;
-          for (let xi = xi0; xi < xi0 + wi; xi++) {
-            const v = H[row + xi];
-            if (v > restY) restY = v;
-          }
-        }
-        if (restY + h > PH + 0.01) continue;
-
-        // Support = tỉ lệ cells ở footprint có H == restY (đang đỡ kiện)
-        let supported = 0;
-        for (let zi = zi0; zi < zi0 + di; zi++) {
-          const row = zi * stride;
-          for (let xi = xi0; xi < xi0 + wi; xi++) {
-            if (H[row + xi] === restY) supported++;
-          }
-        }
-        const support = restY === 0 ? 1.0 : supported / (wi * di);
-        const score = restY*1e8 + x0*1e4 + z0 + h*0.001;
-
-        if (support >= FALLBACK_MIN_SUPPORT && (!bestFb || score < bestFb.score)) {
-          bestFb = { x:x0, y:restY, z:z0, w, h, d, score };
-        }
-        if (support < MIN_SUPPORT) continue;
-        if (!best || score < best.score) {
-          best = { x:x0, y:restY, z:z0, w, h, d, score };
+function findBestPlacement(item, s, minSup = 0.7, fbSup = 0.5) {
+  const rots = [
+    [item.width, item.height, item.depth],
+    [item.width, item.depth,  item.height],
+    [item.height, item.width, item.depth],
+    [item.height, item.depth, item.width],
+    [item.depth, item.width,  item.height],
+    [item.depth, item.height, item.width],
+  ];
+  let best = null, bestFb = null;
+  for (const key of s.candKeys) {
+    const [xs, zs] = key.split(",");
+    const x0 = +xs, z0 = +zs;
+    for (const rot of rots) {
+      const w = rot[0], h = rot[1], d = rot[2];
+      if (x0 + w > s.PW + 0.01 || z0 + d > s.PD + 0.01) continue;
+      const wi = Math.round(w), di = Math.round(d);
+      const xi0 = Math.round(x0), zi0 = Math.round(z0);
+      let restY = 0;
+      for (let zi = zi0; zi < zi0 + di; zi++) {
+        const row = zi * s.stride;
+        for (let xi = xi0; xi < xi0 + wi; xi++) {
+          const v = s.H[row + xi]; if (v > restY) restY = v;
         }
       }
-    }
-
-    const chosen = best || bestFb;
-    if (!chosen) continue;
-
-    packed.push({ ...item, x:chosen.x, y:chosen.y, z:chosen.z, w:chosen.w, h:chosen.h, d:chosen.d });
-
-    // Update heightmap
-    const wi = Math.round(chosen.w), di = Math.round(chosen.d);
-    const xi0 = Math.round(chosen.x), zi0 = Math.round(chosen.z);
-    const newTop = chosen.y + chosen.h;
-    const ziMax = Math.min(zi0 + di, PDi + 1);
-    const xiMax = Math.min(xi0 + wi, PWi + 1);
-    for (let zi = zi0; zi < ziMax; zi++) {
-      const row = zi * stride;
-      for (let xi = xi0; xi < xiMax; xi++) {
-        if (H[row + xi] < newTop) H[row + xi] = newTop;
+      if (restY + h > s.PH + 0.01) continue;
+      let supported = 0;
+      for (let zi = zi0; zi < zi0 + di; zi++) {
+        const row = zi * s.stride;
+        for (let xi = xi0; xi < xi0 + wi; xi++) {
+          if (s.H[row + xi] === restY) supported++;
+        }
+      }
+      const support = restY === 0 ? 1.0 : supported / (wi * di);
+      const score = restY*1e8 + x0*1e4 + z0 + h*0.001;
+      if (support >= fbSup && (!bestFb || score < bestFb.score)) {
+        bestFb = { x:x0, y:restY, z:z0, w, h, d, score };
+      }
+      if (support < minSup) continue;
+      if (!best || score < best.score) {
+        best = { x:x0, y:restY, z:z0, w, h, d, score };
       }
     }
-
-    // Thêm candidates ở góc phải, sau, phải-sau (cộng gap ngang)
-    const nx = chosen.x + chosen.w + gap;
-    const nz = chosen.z + chosen.d + gap;
-    if (nx < PW - 0.5) candKeys.add(`${nx},${chosen.z}`);
-    if (nz < PD - 0.5) candKeys.add(`${chosen.x},${nz}`);
-    if (nx < PW - 0.5 && nz < PD - 0.5) candKeys.add(`${nx},${nz}`);
   }
+  return best || bestFb;
+}
 
-  const ids = new Set(packed.map(p=>p.id));
-  return { packed, unpacked: items.filter(it=>!ids.has(it.id)) };
+function applyPlacement(s, placed, gap) {
+  s.packed.push(placed);
+  const wi = Math.round(placed.w), di = Math.round(placed.d);
+  const xi0 = Math.round(placed.x), zi0 = Math.round(placed.z);
+  const newTop = placed.y + placed.h;
+  const ziMax = Math.min(zi0 + di, s.PDi + 1);
+  const xiMax = Math.min(xi0 + wi, s.PWi + 1);
+  for (let zi = zi0; zi < ziMax; zi++) {
+    const row = zi * s.stride;
+    for (let xi = xi0; xi < xiMax; xi++) {
+      if (s.H[row + xi] < newTop) s.H[row + xi] = newTop;
+    }
+  }
+  if (newTop > s.maxY) s.maxY = newTop;
+  const nx = placed.x + placed.w + gap;
+  const nz = placed.z + placed.d + gap;
+  if (nx < s.PW - 0.5) s.candKeys.add(`${nx},${placed.z}`);
+  if (nz < s.PD - 0.5) s.candKeys.add(`${placed.x},${nz}`);
+  if (nx < s.PW - 0.5 && nz < s.PD - 0.5) s.candKeys.add(`${nx},${nz}`);
+}
+
+function packOnePallet(items, PW, PH, PD, gap = 0) {
+  const state = newPalletState(PW, PH, PD);
+  for (const item of items) {
+    const p = findBestPlacement(item, state);
+    if (!p) continue;
+    applyPlacement(state, { ...item, x:p.x, y:p.y, z:p.z, w:p.w, h:p.h, d:p.d }, gap);
+  }
+  const ids = new Set(state.packed.map(p=>p.id));
+  return { packed: state.packed, unpacked: items.filter(it=>!ids.has(it.id)) };
 }
 
 // ─── MULTI-PALLET ENGINE ──────────────────────────────────────────────────────
@@ -228,13 +228,75 @@ function bestPackForGroup(items, PW, PH, PD, gap, nRandom = 30) {
 function packAllItems(items, palletDim, gap = 0) {
   const { w:PW, h:PH, d:PD } = palletDim;
   const sorted = [...items].sort(sortPackOrder);
-  const pallets=[]; let remaining=sorted, guard=0;
-  while (remaining.length>0 && guard<500) {
+
+  // Phase 1: Sequential pack để xác định N pallets cần dùng.
+  let trialCount = 0, remaining = sorted, guard = 0;
+  while (remaining.length > 0 && guard < 500) {
     guard++;
-    const { packed, unpacked } = packOnePallet(remaining, PW, PH, PD, gap);
-    if (packed.length===0) { pallets.push({ packed:[], overflow:remaining }); break; }
-    pallets.push({ packed, overflow:[] });
-    remaining = unpacked;
+    const r = packOnePallet(remaining, PW, PH, PD, gap);
+    if (r.packed.length === 0) break;
+    trialCount++;
+    remaining = r.unpacked;
+  }
+  const N = Math.max(1, trialCount);
+
+  // Phase 2: Balanced pack với N pallets pre-init.
+  // Tiêu chí: kiện mới đặt vào pallet sao cho max-Y sau khi đặt thấp nhất, cùng
+  // điểm thì pallet thấp hơn thắng → các pallet cao đều, không có cái thấp tịt.
+  const states = [];
+  for (let i = 0; i < N; i++) states.push(newPalletState(PW, PH, PD));
+  for (const item of sorted) {
+    let best = null;
+    for (const s of states) {
+      const p = findBestPlacement(item, s);
+      if (!p) continue;
+      const newMaxY = Math.max(s.maxY, p.y + p.h);
+      if (!best || newMaxY < best.newMaxY ||
+          (newMaxY === best.newMaxY && s.maxY < best.s.maxY)) {
+        best = { s, p, newMaxY };
+      }
+    }
+    if (best) applyPlacement(best.s, { ...item, x:best.p.x, y:best.p.y, z:best.p.z, w:best.p.w, h:best.p.h, d:best.p.d }, gap);
+  }
+
+  // Phase 3: Patch — kiện chưa fit thì thử lại với support relaxed (0.4/0.3)
+  // tương đương sếp xếp tay với overhang nhẹ, tránh phát sinh pallet thừa.
+  const packedIds = new Set();
+  states.forEach(s => s.packed.forEach(b => packedIds.add(b.id)));
+  const skipped = sorted.filter(it => !packedIds.has(it.id));
+  for (const item of skipped) {
+    let best = null;
+    for (const s of states) {
+      const p = findBestPlacement(item, s, 0.4, 0.3);
+      if (!p) continue;
+      const newMaxY = Math.max(s.maxY, p.y + p.h);
+      if (!best || newMaxY < best.newMaxY) best = { s, p };
+    }
+    if (best) applyPlacement(best.s, { ...item, x:best.p.x, y:best.p.y, z:best.p.z, w:best.p.w, h:best.p.h, d:best.p.d }, gap);
+  }
+
+  // Phase 4: Nếu vẫn còn kiện chưa fit, mở pallet mới (rare case).
+  states.forEach(s => s.packed.forEach(b => packedIds.add(b.id)));
+  let stillSkipped = sorted.filter(it => !packedIds.has(it.id));
+  guard = 0;
+  while (stillSkipped.length > 0 && guard < 10) {
+    guard++;
+    const extra = newPalletState(PW, PH, PD);
+    const before = extra.packed.length;
+    for (const item of stillSkipped) {
+      const p = findBestPlacement(item, extra);
+      if (p) applyPlacement(extra, { ...item, x:p.x, y:p.y, z:p.z, w:p.w, h:p.h, d:p.d }, gap);
+    }
+    if (extra.packed.length === before) break;
+    states.push(extra);
+    extra.packed.forEach(b => packedIds.add(b.id));
+    stillSkipped = sorted.filter(it => !packedIds.has(it.id));
+  }
+
+  const pallets = states.map(s => ({ packed: s.packed, overflow: [] }));
+  let remainingFinal = sorted.filter(it => !packedIds.has(it.id));
+  if (remainingFinal.length > 0 && pallets.length > 0) {
+    pallets[pallets.length - 1].overflow = remainingFinal;
   }
 
   // CHW per pallet (IATA): max(tổng kg pallet, bbox_pallet/6000) — pallet bị tính
