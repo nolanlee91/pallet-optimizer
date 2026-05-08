@@ -237,27 +237,38 @@ function packAllItems(items, palletDim, gap = 0) {
     remaining = unpacked;
   }
 
-  // FIX: CHW dùng ACTUAL bounding box của kiện đã xếp trên mỗi pallet,
-  // KHÔNG phải thể tích full pallet. Nếu chỉ chiếm 1/3 pallet thì CHW = 1/3 đó.
+  // CHW per pallet (IATA): max(tổng kg pallet, bbox_pallet/6000) — pallet bị tính
+  // theo bbox không gian thực chiếm chứ không phải sum vol từng kiện.
+  // CHW tổng = sum CHW từng pallet (mỗi pallet là 1 lô shipping riêng).
   let totalActualItemVolume = 0;
   let totalBoundingVolume   = 0;
+  let totalDimWeight        = 0;
+  let totalChw              = 0;
   pallets.forEach(p => {
-    if (p.packed.length === 0) { p.boundingBox = { w:0, h:0, d:0 }; p.boundingVolume = 0; return; }
-    let maxX = 0, maxY = 0, maxZ = 0;
+    if (p.packed.length === 0) {
+      p.boundingBox = { w:0, h:0, d:0 }; p.boundingVolume = 0;
+      p.weight = 0; p.dimWeight = 0; p.chw = 0;
+      return;
+    }
+    let maxX = 0, maxY = 0, maxZ = 0, palletKg = 0;
     for (const b of p.packed) {
       if (b.x + b.w > maxX) maxX = b.x + b.w;
       if (b.y + b.h > maxY) maxY = b.y + b.h;
       if (b.z + b.d > maxZ) maxZ = b.z + b.d;
+      palletKg += b.weight;
+      totalActualItemVolume += b.w * b.h * b.d;
     }
     p.boundingBox = { w: maxX, h: maxY, d: maxZ };
     p.boundingVolume = maxX * maxY * maxZ;
+    p.weight    = palletKg;
+    p.dimWeight = p.boundingVolume / VOL_DIVISOR;
+    p.chw       = Math.max(p.weight, p.dimWeight);
     totalBoundingVolume += p.boundingVolume;
-    for (const b of p.packed) totalActualItemVolume += b.w * b.h * b.d;
+    totalDimWeight      += p.dimWeight;
+    totalChw            += p.chw;
   });
 
   const totalWeight = items.reduce((s,i)=>s+i.weight,0);
-  const dimWeight   = totalBoundingVolume / VOL_DIVISOR;
-  const cw          = Math.max(totalWeight, dimWeight);
   // Stack density = actual items / bounding box (độ chặt của khối hàng)
   const utilization = totalBoundingVolume > 0
     ? ((totalActualItemVolume / totalBoundingVolume) * 100).toFixed(1)
@@ -266,7 +277,7 @@ function packAllItems(items, palletDim, gap = 0) {
 
   const lookup = {};
   pallets.forEach((p,pi)=>p.packed.forEach((item,bi)=>{ lookup[item.id]={ palletIndex:pi, palletNum:pi+1, order:bi+1, item }; }));
-  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, lookup, palletDim, totalBoundingVolume, gap, mode:"auto" };
+  return { pallets, totalWeight, dimWeight: totalDimWeight, cw: totalChw, utilization, totalItems:items.length, totalPacked, lookup, palletDim, totalBoundingVolume, gap, mode:"auto" };
 }
 
 // ─── MANUAL MODE — sếp chỉ định pallet, app chỉ tính vị trí trong nhóm ────────
@@ -283,26 +294,37 @@ function packManualGroups(items, palletDim, gap = 0) {
   let totalActualItemVolume = 0;
   let totalBoundingVolume = 0;
 
+  let totalDimWeight = 0;
+  let totalChw       = 0;
+
   for (const num of palletNums) {
     // Manual mode: user đã chọn pallet → cần fit tối đa kiện trong group.
     // Best-of-N (sort variations + random shuffles) tăng khả năng fit hết.
     const { packed, unpacked } = bestPackForGroup(groups[num], PW, PH, PD, gap);
-    let maxX = 0, maxY = 0, maxZ = 0;
+    let maxX = 0, maxY = 0, maxZ = 0, palletKg = 0;
     for (const b of packed) {
       if (b.x + b.w > maxX) maxX = b.x + b.w;
       if (b.y + b.h > maxY) maxY = b.y + b.h;
       if (b.z + b.d > maxZ) maxZ = b.z + b.d;
+      palletKg += b.weight;
       totalActualItemVolume += b.w * b.h * b.d;
     }
     const bbox = { w:maxX, h:maxY, d:maxZ };
     const bboxVol = maxX * maxY * maxZ;
+    const palletDimWt = bboxVol / VOL_DIVISOR;
+    const palletChw = Math.max(palletKg, palletDimWt);
     totalBoundingVolume += bboxVol;
-    pallets.push({ packed, overflow: unpacked, boundingBox: bbox, boundingVolume: bboxVol, manualPalletNum: num });
+    totalDimWeight      += palletDimWt;
+    totalChw            += palletChw;
+    pallets.push({
+      packed, overflow: unpacked,
+      boundingBox: bbox, boundingVolume: bboxVol,
+      weight: palletKg, dimWeight: palletDimWt, chw: palletChw,
+      manualPalletNum: num,
+    });
   }
 
   const totalWeight = items.reduce((s,i)=>s+i.weight,0);
-  const dimWeight   = totalBoundingVolume / VOL_DIVISOR;
-  const cw          = Math.max(totalWeight, dimWeight);
   const utilization = totalBoundingVolume > 0
     ? ((totalActualItemVolume / totalBoundingVolume) * 100).toFixed(1)
     : "0.0";
@@ -313,7 +335,7 @@ function packManualGroups(items, palletDim, gap = 0) {
   pallets.forEach((p,pi)=>p.packed.forEach((item,bi)=>{
     lookup[item.id] = { palletIndex:pi, palletNum:p.manualPalletNum, order:bi+1, item };
   }));
-  return { pallets, totalWeight, dimWeight, cw, utilization, totalItems:items.length, totalPacked, totalOverflow, lookup, palletDim, totalBoundingVolume, gap, mode:"manual" };
+  return { pallets, totalWeight, dimWeight: totalDimWeight, cw: totalChw, utilization, totalItems:items.length, totalPacked, totalOverflow, lookup, palletDim, totalBoundingVolume, gap, mode:"manual" };
 }
 
 // ─── 3D VIEWER ────────────────────────────────────────────────────────────────
@@ -909,11 +931,11 @@ export default function App() {
                         {cur?.boundingBox?.w>0 && <span style={{ color:"#10B981" }}>
                           {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)}cm
                         </span>}
-                        {cur && cur.packed.length > 0 && (() => {
-                          const totalKg = cur.packed.reduce((s,b)=>s+b.weight, 0);
-                          const totalChw = cur.packed.reduce((s,b)=>s + Math.max(b.weight, (b.w*b.h*b.d)/VOL_DIVISOR), 0);
-                          return <span style={{ color:"#42a5f5" }}>{totalKg.toFixed(1)}kg / CHW {totalChw.toFixed(1)}kg</span>;
-                        })()}
+                        {cur && cur.packed.length > 0 && (
+                          <span style={{ color:"#42a5f5" }} title={`Pallet kg = ${cur.weight.toFixed(1)}, dim = bbox/6000 = ${cur.dimWeight.toFixed(1)}, CHW = max(kg, dim)`}>
+                            {cur.weight.toFixed(1)}kg / CHW {cur.chw.toFixed(1)}kg
+                          </span>
+                        )}
                       </span>
                       {highlightId&&<span style={{ ...LS,color:"#D32F2F" }}>Highlight: {highlightId}</span>}
                     </div>
