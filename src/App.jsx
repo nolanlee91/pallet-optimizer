@@ -907,13 +907,18 @@ export default function App() {
                           : "Packing Result"}
                         {cur?.overflow?.length>0 && <span style={{ color:"#ff6b6b" }}>+{cur.overflow.length} thừa</span>}
                         {cur?.boundingBox?.w>0 && <span style={{ color:"#10B981" }}>
-                          {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)} cm
+                          {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)}cm
                         </span>}
+                        {cur && cur.packed.length > 0 && (() => {
+                          const totalKg = cur.packed.reduce((s,b)=>s+b.weight, 0);
+                          const totalChw = cur.packed.reduce((s,b)=>s + Math.max(b.weight, (b.w*b.h*b.d)/VOL_DIVISOR), 0);
+                          return <span style={{ color:"#42a5f5" }}>{totalKg.toFixed(1)}kg / CHW {totalChw.toFixed(1)}kg</span>;
+                        })()}
                       </span>
                       {highlightId&&<span style={{ ...LS,color:"#D32F2F" }}>Highlight: {highlightId}</span>}
                     </div>
-                    <div style={{ overflowY:"auto",flex:1 }}>
-                      <table style={{ width:"100%",borderCollapse:"collapse" }}>
+                    <div style={{ overflowY:"auto",overflowX:"auto",flex:1 }}>
+                      <table style={{ width:"100%",minWidth:480,borderCollapse:"collapse",whiteSpace:"nowrap" }}>
                         <thead>
                           <tr style={{ background:"#121212",borderBottom:"1px solid #2C2C2C",position:"sticky",top:0,zIndex:1 }}>
                             {["#","Item ID","W×H×D","X,Y,Z","Wt","CHW"].map((h,i)=>(<th key={i} style={{ padding:"7px 10px",...LS,textAlign:i>=3?"right":"left" }}>{h}</th>))}
