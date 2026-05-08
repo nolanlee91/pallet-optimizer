@@ -595,7 +595,8 @@ function ScanTab({ result, onJumpToPallet }) {
                 ["Vị trí Y (cao)", `${scanResult.item.y.toFixed(0)} cm`, "height"],
                 ["Vị trí Z", `${scanResult.item.z.toFixed(0)} cm`, "arrow_right_alt"],
                 ["Kích thước", `${scanResult.item.w}×${scanResult.item.h}×${scanResult.item.d} cm`, "straighten"],
-                ["Cân nặng", `${scanResult.item.weight} kg`, "weight"],
+                ["Cân nặng (kg)", `${scanResult.item.weight} kg`, "weight"],
+                ["CHW (kg)", `${Math.max(scanResult.item.weight, (scanResult.item.w*scanResult.item.h*scanResult.item.d)/6000).toFixed(2)} kg`, "scale"],
                 ["Tầng", scanResult.item.y < 40 ? "Tầng 1 (Sàn)" : scanResult.item.y < 90 ? "Tầng 2 (Giữa)" : "Tầng 3 (Trên)", "layers"],
                 ["Thứ tự xếp", `#${scanResult.order ?? "—"}`, "format_list_numbered"],
               ].map(([label, val, icon]) => (
@@ -915,7 +916,7 @@ export default function App() {
                       <table style={{ width:"100%",borderCollapse:"collapse" }}>
                         <thead>
                           <tr style={{ background:"#121212",borderBottom:"1px solid #2C2C2C",position:"sticky",top:0,zIndex:1 }}>
-                            {["#","Item ID","W×H×D","X,Y,Z","Wt"].map((h,i)=>(<th key={i} style={{ padding:"7px 10px",...LS,textAlign:i>=3?"right":"left" }}>{h}</th>))}
+                            {["#","Item ID","W×H×D","X,Y,Z","Wt","CHW"].map((h,i)=>(<th key={i} style={{ padding:"7px 10px",...LS,textAlign:i>=3?"right":"left" }}>{h}</th>))}
                           </tr>
                         </thead>
                         <tbody>
@@ -936,9 +937,12 @@ export default function App() {
                               <td style={{ padding:"7px 10px",fontSize:10,color:"#666",fontFamily:"'Inter'" }}>{item.w}×{item.h}×{item.d}</td>
                               <td style={{ padding:"7px 10px",fontSize:10,color:"#888",fontFamily:"'Inter'",textAlign:"right" }}>{item.x.toFixed(0)},{item.y.toFixed(0)},{item.z.toFixed(0)}</td>
                               <td style={{ padding:"7px 10px",fontSize:10,color:"#666",fontFamily:"'Inter'",textAlign:"right" }}>{item.weight}kg</td>
+                              <td style={{ padding:"7px 10px",fontSize:10,color:"#42a5f5",fontFamily:"'Inter'",textAlign:"right",fontWeight:600 }}>
+                                {Math.max(item.weight, (item.w*item.h*item.d)/VOL_DIVISOR).toFixed(2)}kg
+                              </td>
                             </tr>
                           )) : (
-                            <tr><td colSpan={5} style={{ padding:"30px",textAlign:"center",...LS }}>Chạy optimization để xem kết quả</td></tr>
+                            <tr><td colSpan={6} style={{ padding:"30px",textAlign:"center",...LS }}>Chạy optimization để xem kết quả</td></tr>
                           )}
                         </tbody>
                       </table>
