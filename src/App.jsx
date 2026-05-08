@@ -169,16 +169,61 @@ function packOnePallet(items, PW, PH, PD, gap = 0) {
 }
 
 // ─── MULTI-PALLET ENGINE ──────────────────────────────────────────────────────
-// Sort theo (footprint DESC, weight DESC). Kiện đáy bự xuống sàn trước để tile
-// sàn hiệu quả, kiện nhỏ chèn lên trên. Cùng footprint thì nặng xuống dưới.
-// (Weight-first sort cũ làm kiện nhẹ-đáy-bự bị đẩy lên cao → bbox lệch + thêm pallet.)
 function maxFootprint(it) {
   return Math.max(it.width*it.depth, it.width*it.height, it.height*it.depth);
 }
+// Sort mặc định cho auto mode: footprint DESC, weight DESC.
+// Kiện đáy bự xuống sàn trước → tile sàn hiệu quả, kiện nhỏ chèn lên trên.
 function sortPackOrder(a, b) {
   const fa = maxFootprint(a), fb = maxFootprint(b);
   if (Math.abs(fb - fa) > 0.5) return fb - fa;
   return b.weight - a.weight;
+}
+
+// Mulberry32 — seeded PRNG, đảm bảo kết quả lặp lại được giữa các lần run.
+function mulberry32(seed) {
+  return function() {
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// Best-of-N: thử nhiều sort + random shuffle, chọn kết quả ít overflow nhất
+// (hoặc nhiều kiện packed nhất, hoặc bbox nhỏ nhất nếu hoà). Dùng cho manual
+// mode khi user lock pallet — đảm bảo tận dụng tối đa group user chỉ định.
+function bestPackForGroup(items, PW, PH, PD, gap, nRandom = 30) {
+  const sorts = [
+    sortPackOrder,
+    (a,b) => b.width*b.height*b.depth - a.width*a.height*a.depth,                         // volume DESC
+    (a,b) => Math.max(b.width,b.height,b.depth) - Math.max(a.width,a.height,a.depth),     // max_dim DESC
+    (a,b) => Math.min(b.width,b.height,b.depth) - Math.min(a.width,a.height,a.depth),     // min_dim DESC
+    (a,b) => b.weight - a.weight,                                                           // weight DESC
+    (a,b) => maxFootprint(a) - maxFootprint(b),                                            // footprint ASC
+  ];
+
+  let best = null;
+  const consider = (arr) => {
+    const r = packOnePallet(arr, PW, PH, PD, gap);
+    if (!best || r.unpacked.length < best.unpacked.length) best = r;
+  };
+
+  for (const sortFn of sorts) {
+    consider([...items].sort(sortFn));
+    if (best.unpacked.length === 0) return best;
+  }
+  const rand = mulberry32(items.length * 31 + (items[0]?.id?.length || 0));
+  for (let i = 0; i < nRandom; i++) {
+    const arr = [...items];
+    for (let j = arr.length - 1; j > 0; j--) {
+      const k = Math.floor(rand() * (j+1));
+      [arr[j], arr[k]] = [arr[k], arr[j]];
+    }
+    consider(arr);
+    if (best.unpacked.length === 0) return best;
+  }
+  return best;
 }
 function packAllItems(items, palletDim, gap = 0) {
   const { w:PW, h:PH, d:PD } = palletDim;
@@ -239,8 +284,9 @@ function packManualGroups(items, palletDim, gap = 0) {
   let totalBoundingVolume = 0;
 
   for (const num of palletNums) {
-    const groupItems = [...groups[num]].sort(sortPackOrder);
-    const { packed, unpacked } = packOnePallet(groupItems, PW, PH, PD, gap);
+    // Manual mode: user đã chọn pallet → cần fit tối đa kiện trong group.
+    // Best-of-N (sort variations + random shuffles) tăng khả năng fit hết.
+    const { packed, unpacked } = bestPackForGroup(groups[num], PW, PH, PD, gap);
     let maxX = 0, maxY = 0, maxZ = 0;
     for (const b of packed) {
       if (b.x + b.w > maxX) maxX = b.x + b.w;
