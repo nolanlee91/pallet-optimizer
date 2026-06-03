@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, Component } from "react";
 import * as THREE from "three";
+import { supabase, supabaseEnabled } from "./supabaseClient";
 
 // ─── FONTS ────────────────────────────────────────────────────────────────────
 const FontLink = () => {
@@ -737,6 +738,48 @@ function ScanTab({ result, onJumpToPallet }) {
   );
 }
 
+// ─── LOGIN SCREEN ─────────────────────────────────────────────────────────────
+function LoginScreen({ onSignedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError(null); setBusy(true);
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) { setError(error.message); return; }
+    if (data?.session) onSignedIn(data.session);
+  };
+
+  return (
+    <>
+      <FontLink />
+      <div style={{ height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#121212",fontFamily:"'Inter',sans-serif" }}>
+        <form onSubmit={submit} style={{ width:340,background:"#1E1E1E",border:"1px solid #2C2C2C",padding:"28px 26px" }}>
+          <div style={{ fontFamily:"'Space Grotesk'",fontSize:18,fontWeight:700,color:"#fff",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:4 }}>3D Optimizer</div>
+          <div style={{ ...LS,marginBottom:22 }}>Đăng nhập tài khoản kho</div>
+          <div style={{ ...LS,marginBottom:6 }}>Email</div>
+          <input value={email} onChange={e=>setEmail(e.target.value)} autoComplete="username" type="text"
+            style={{ width:"100%",background:"#121212",border:"1px solid #2C2C2C",color:"#fff",fontFamily:"monospace",fontSize:12,padding:"9px 12px",outline:"none",marginBottom:14 }}
+            onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"} />
+          <div style={{ ...LS,marginBottom:6 }}>Password</div>
+          <input value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" type="password"
+            style={{ width:"100%",background:"#121212",border:"1px solid #2C2C2C",color:"#fff",fontFamily:"monospace",fontSize:12,padding:"9px 12px",outline:"none",marginBottom:14 }}
+            onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"} />
+          {error && <div style={{ background:"#1a0f0f",border:"1px solid #4a1a1a",color:"#ff6b6b",fontSize:11,padding:"7px 10px",marginBottom:12,fontFamily:"'Inter'" }}>{error}</div>}
+          <button type="submit" disabled={busy||!email||!password}
+            style={{ width:"100%",background:busy?"#7a1a1a":"#D32F2F",color:"#fff",border:"none",padding:"10px 0",cursor:busy?"wait":"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.14em" }}>
+            {busy?"⟳ Đang đăng nhập...":"Đăng nhập"}
+          </button>
+        </form>
+      </div>
+    </>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [mode,        setMode]        = useState("auto"); // "auto" | "manual"
@@ -756,6 +799,36 @@ export default function App() {
   const [customH,     setCustomH]     = useState(155);
   const [customD,     setCustomD]     = useState(102);
   const [gap,         setGap]         = useState(DEFAULT_GAP);
+
+  // ─── Auth + Flights ────────────────────────────────────────────────────────
+  const [session,        setSession]        = useState(null);
+  const [authChecked,    setAuthChecked]    = useState(!supabaseEnabled);
+  const [flights,        setFlights]        = useState([]);
+  const [currentFlightId,setCurrentFlightId]= useState(null);
+  const [showSaveModal,  setShowSaveModal]  = useState(false);
+  const [saveFlightName, setSaveFlightName] = useState("");
+  const [saving,         setSaving]         = useState(false);
+
+  useEffect(() => {
+    if (!supabaseEnabled) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthChecked(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  const refreshFlights = useCallback(async () => {
+    if (!supabaseEnabled || !session) { setFlights([]); return; }
+    const { data, error } = await supabase
+      .from("flights")
+      .select("id,name,mode,pallet_w,pallet_h,pallet_d,gap,updated_at")
+      .order("updated_at", { ascending: false });
+    if (!error) setFlights(data || []);
+  }, [session]);
+
+  useEffect(() => { refreshFlights(); }, [refreshFlights]);
 
   // Derived (theo mode hiện tại)
   const raw    = mode === "auto" ? rawAuto    : rawManual;
@@ -807,6 +880,77 @@ export default function App() {
     setHighlight(itemId);
     setTab("dashboard");
   };
+
+  // ─── Flight handlers ───────────────────────────────────────────────────────
+  const handleSaveFlight = async () => {
+    if (!supabaseEnabled || !session) return;
+    const name = saveFlightName.trim();
+    if (!name) { alert("Đặt tên flight"); return; }
+    setSaving(true);
+    const d = getPalletDim();
+    const payload = {
+      name, raw_input: raw, mode,
+      pallet_w: d.w, pallet_h: d.h, pallet_d: d.d,
+      gap: Math.max(0, +gap || 0),
+      updated_at: new Date().toISOString(),
+    };
+    let res;
+    if (currentFlightId) {
+      res = await supabase.from("flights").update(payload).eq("id", currentFlightId).select().single();
+    } else {
+      res = await supabase.from("flights").insert(payload).select().single();
+    }
+    setSaving(false);
+    if (res.error) { alert("Lỗi lưu: "+res.error.message); return; }
+    setCurrentFlightId(res.data.id);
+    setShowSaveModal(false);
+    setSaveFlightName("");
+    refreshFlights();
+  };
+
+  const handleLoadFlight = async (flightId) => {
+    if (!supabaseEnabled) return;
+    const { data, error } = await supabase.from("flights").select("*").eq("id", flightId).single();
+    if (error) { alert("Lỗi load: "+error.message); return; }
+    setMode(data.mode);
+    if (data.mode === "manual") setRawManual(data.raw_input);
+    else                        setRawAuto(data.raw_input);
+    // Map pallet config sang preset hoặc custom
+    const matchPreset = PALLET_PRESETS.findIndex(p =>
+      !p.custom && Math.abs(p.w - data.pallet_w) < 0.5 && Math.abs(p.h - data.pallet_h) < 0.5 && Math.abs(p.d - data.pallet_d) < 0.5);
+    if (matchPreset >= 0) {
+      setPresetIdx(matchPreset);
+    } else {
+      setPresetIdx(PALLET_PRESETS.findIndex(p => p.custom));
+      setCustomW(data.pallet_w); setCustomH(data.pallet_h); setCustomD(data.pallet_d);
+    }
+    setGap(+data.gap);
+    setCurrentFlightId(data.id);
+    setActive(0); setHighlight(null);
+    setSaveFlightName(data.name);
+    // Auto-run optimization sau khi state set
+    setTimeout(() => handleOptimize(), 50);
+  };
+
+  const handleDeleteFlight = async (flightId, name) => {
+    if (!supabaseEnabled) return;
+    if (!confirm(`Xoá flight "${name}"?`)) return;
+    const { error } = await supabase.from("flights").delete().eq("id", flightId);
+    if (error) { alert("Lỗi xoá: "+error.message); return; }
+    if (currentFlightId === flightId) setCurrentFlightId(null);
+    refreshFlights();
+  };
+
+  const handleLogout = async () => {
+    if (!supabaseEnabled) return;
+    await supabase.auth.signOut();
+    setCurrentFlightId(null);
+    setFlights([]);
+  };
+
+  // Guard: chưa check auth → blank. Cần login → LoginScreen.
+  if (!authChecked) return null;
+  if (supabaseEnabled && !session) return <LoginScreen onSignedIn={(s)=>setSession(s)} />;
 
   const cur = result?.pallets[activePallet];
   const dim = result?.palletDim || getPalletDim();
@@ -894,14 +1038,46 @@ export default function App() {
             </div>
           )}
 
+          {supabaseEnabled && flights.length > 0 && (
+            <div style={{ padding:"10px 14px", borderTop:"1px solid #2C2C2C" }}>
+              <div style={{ ...LS, marginBottom:8 }}>Flights — {flights.length} đã lưu</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:4, maxHeight:180, overflowY:"auto" }}>
+                {flights.map(f => (
+                  <div key={f.id} style={{ display:"flex", alignItems:"stretch", gap:2 }}>
+                    <button onClick={()=>handleLoadFlight(f.id)} title={`${f.mode} — ${f.pallet_w}×${f.pallet_d}×${f.pallet_h}cm — gap ${f.gap}`}
+                      style={{ flex:1,padding:"6px 9px",background:currentFlightId===f.id?"#D32F2F":"#252525",color:"#fff",border:"none",cursor:"pointer",fontFamily:"'Space Grotesk'",fontSize:10,letterSpacing:"0.05em",fontWeight:600,textAlign:"left",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}
+                      onMouseEnter={e=>{if(currentFlightId!==f.id)e.currentTarget.style.background="#333";}}
+                      onMouseLeave={e=>{if(currentFlightId!==f.id)e.currentTarget.style.background="#252525";}}>
+                      {f.name}
+                    </button>
+                    <button onClick={()=>handleDeleteFlight(f.id, f.name)} title="Xoá flight"
+                      style={{ padding:"0 7px",background:"#252525",color:"#666",border:"none",cursor:"pointer",fontSize:11 }}
+                      onMouseEnter={e=>{e.currentTarget.style.background="#4a1a1a";e.currentTarget.style.color="#ff6b6b";}}
+                      onMouseLeave={e=>{e.currentTarget.style.background="#252525";e.currentTarget.style.color="#666";}}>×</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div style={{ padding:"14px 18px", borderTop:"1px solid #2C2C2C", marginTop:"auto", display:"flex", alignItems:"center", gap:10 }}>
             <div style={{ width:32,height:32,borderRadius:"50%",background:"#2C2C2C",display:"flex",alignItems:"center",justifyContent:"center" }}>
               <span className="material-symbols-outlined" style={{fontSize:16,color:"#D32F2F"}}>person</span>
             </div>
-            <div>
-              <div style={{ fontFamily:"'Space Grotesk'",fontSize:10,fontWeight:700,color:"#fff",textTransform:"uppercase" }}>Ops Leader</div>
-              <div style={LS}>Station Alpha</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontFamily:"'Space Grotesk'",fontSize:10,fontWeight:700,color:"#fff",textTransform:"uppercase",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
+                {session?.user?.email?.split("@")[0] || "Ops Leader"}
+              </div>
+              <div style={LS}>{session?.user?.email?.split("@")[1] || "Station Alpha"}</div>
             </div>
+            {supabaseEnabled && session && (
+              <button onClick={handleLogout} title="Đăng xuất"
+                style={{ background:"transparent",border:"1px solid #2C2C2C",color:"#666",cursor:"pointer",padding:"4px 6px",fontFamily:"'Space Grotesk'",fontSize:9 }}
+                onMouseEnter={e=>{e.currentTarget.style.color="#ff6b6b";e.currentTarget.style.borderColor="#4a1a1a";}}
+                onMouseLeave={e=>{e.currentTarget.style.color="#666";e.currentTarget.style.borderColor="#2C2C2C";}}>
+                ⏻
+              </button>
+            )}
           </div>
         </aside>
 
@@ -965,6 +1141,19 @@ export default function App() {
                           onMouseEnter={e=>{if(!running)e.currentTarget.style.background="#b52828";}} onMouseLeave={e=>{if(!running)e.currentTarget.style.background="#D32F2F";}}>
                           {running?"⟳ Computing...":`▶ Run ${mode==="manual"?"Manual":"Auto"} Optimization`}
                         </button>
+                        {supabaseEnabled && result && (
+                          <button title="Lưu vào flight"
+                            onClick={()=>{
+                              if (!saveFlightName && currentFlightId) {
+                                const f = flights.find(x=>x.id===currentFlightId);
+                                if (f) setSaveFlightName(f.name);
+                              }
+                              setShowSaveModal(true);
+                            }}
+                            style={{ background:"#42a5f5",border:"none",color:"#fff",padding:"9px 14px",cursor:"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em" }}>
+                            💾 Lưu
+                          </button>
+                        )}
                         <button onClick={()=>{
                           updateRaw("");
                           if(mode==="manual"){ setResultManual(null); setTimingManual(null); }
@@ -1077,6 +1266,44 @@ export default function App() {
           </footer>
         </main>
       </div>
+
+      {showSaveModal && (
+        <div onClick={()=>!saving&&setShowSaveModal(false)}
+          style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center" }}>
+          <div onClick={e=>e.stopPropagation()}
+            style={{ width:380,background:"#1E1E1E",border:"1px solid #2C2C2C",padding:"22px 24px",fontFamily:"'Inter'" }}>
+            <div style={{ fontFamily:"'Space Grotesk'",fontSize:13,fontWeight:700,color:"#fff",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:14 }}>
+              {currentFlightId ? "Cập nhật flight" : "Lưu flight mới"}
+            </div>
+            <div style={{ ...LS, marginBottom:6 }}>Tên flight</div>
+            <input value={saveFlightName} onChange={e=>setSaveFlightName(e.target.value)} autoFocus
+              placeholder="VD: BOM-20260601 / Container 1234"
+              onKeyDown={e=>{ if(e.key==="Enter")handleSaveFlight(); }}
+              style={{ width:"100%",background:"#121212",border:"1px solid #2C2C2C",color:"#fff",fontFamily:"monospace",fontSize:12,padding:"9px 12px",outline:"none",marginBottom:14 }}
+              onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"} />
+            <div style={{ ...LS, color:"#666", fontSize:9, marginBottom:14, lineHeight:1.5 }}>
+              Lưu: {mode==="manual"?"Manual":"Auto"} mode • {dim.w}×{dim.d}×{dim.h}cm • gap {gap}cm • {parseExcelPaste(raw, mode==="manual").length} kiện input
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={handleSaveFlight} disabled={saving||!saveFlightName.trim()}
+                style={{ flex:1,background:saving?"#7a1a1a":"#D32F2F",color:"#fff",border:"none",padding:"9px 0",cursor:saving?"wait":"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.14em" }}>
+                {saving?"⟳ Đang lưu...":(currentFlightId?"Cập nhật":"Lưu mới")}
+              </button>
+              {currentFlightId && (
+                <button onClick={()=>{ setCurrentFlightId(null); setSaveFlightName(""); }} disabled={saving}
+                  title="Lưu thành flight mới"
+                  style={{ background:"transparent",border:"1px solid #2C2C2C",color:"#888",padding:"9px 12px",cursor:"pointer",fontFamily:"'Space Grotesk'",fontSize:10 }}>
+                  Tách mới
+                </button>
+              )}
+              <button onClick={()=>setShowSaveModal(false)} disabled={saving}
+                style={{ background:"transparent",border:"1px solid #2C2C2C",color:"#666",padding:"9px 14px",cursor:"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase" }}>
+                Huỷ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
