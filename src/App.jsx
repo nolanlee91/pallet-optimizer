@@ -39,6 +39,9 @@ const PALLET_PRESETS = [
 
 const VOL_DIVISOR = 6000;
 const DEFAULT_GAP = 1.5; // cm — khoảng hở ngang giữa các kiện (1–2cm để công nhân kê tay)
+// Pallet base (skid gỗ) chiếm chiều cao + có trọng lượng riêng — cộng vào CHW.
+const PALLET_BASE_HEIGHT = 13; // cm
+const PALLET_WEIGHT = 10;      // kg
 const BOX_COLORS = [
   "#e53935","#42a5f5","#66bb6a","#ffa726","#ab47bc",
   "#26c6da","#d4e157","#ec407a","#8d6e63","#ff7043",
@@ -324,9 +327,9 @@ function packAllItems(items, palletDim, gap = 0) {
     pallets[pallets.length - 1].overflow = remainingFinal;
   }
 
-  // CHW per pallet (IATA): max(tổng kg pallet, bbox_pallet/6000) — pallet bị tính
-  // theo bbox không gian thực chiếm chứ không phải sum vol từng kiện.
-  // CHW tổng = sum CHW từng pallet (mỗi pallet là 1 lô shipping riêng).
+  // CHW per pallet (IATA + base pallet): pallet thực tế khi ship gồm cả base gỗ
+  // (PALLET_BASE_HEIGHT cao + PALLET_WEIGHT nặng). Dim weight tính theo footprint
+  // pallet × (items_top + base_h). Total kg = items kg + pallet kg.
   let totalActualItemVolume = 0;
   let totalBoundingVolume   = 0;
   let totalDimWeight        = 0;
@@ -335,21 +338,25 @@ function packAllItems(items, palletDim, gap = 0) {
     if (p.packed.length === 0) {
       p.boundingBox = { w:0, h:0, d:0 }; p.boundingVolume = 0;
       p.weight = 0; p.dimWeight = 0; p.chw = 0;
+      p.shipHeight = 0; p.itemsWeight = 0;
       return;
     }
-    let maxX = 0, maxY = 0, maxZ = 0, palletKg = 0;
+    let maxX = 0, maxY = 0, maxZ = 0, itemsKg = 0;
     for (const b of p.packed) {
       if (b.x + b.w > maxX) maxX = b.x + b.w;
       if (b.y + b.h > maxY) maxY = b.y + b.h;
       if (b.z + b.d > maxZ) maxZ = b.z + b.d;
-      palletKg += b.weight;
+      itemsKg += b.weight;
       totalActualItemVolume += b.w * b.h * b.d;
     }
-    p.boundingBox = { w: maxX, h: maxY, d: maxZ };
+    p.boundingBox = { w: maxX, h: maxY, d: maxZ };          // items bbox (visual)
     p.boundingVolume = maxX * maxY * maxZ;
-    p.weight    = palletKg;
-    p.dimWeight = p.boundingVolume / VOL_DIVISOR;
-    p.chw       = Math.max(p.weight, p.dimWeight);
+    p.itemsWeight = itemsKg;
+    p.shipHeight  = maxY + PALLET_BASE_HEIGHT;
+    p.shipVolume  = PW * p.shipHeight * PD;                  // pallet footprint × total height
+    p.weight      = itemsKg + PALLET_WEIGHT;                 // + 10kg pallet base
+    p.dimWeight   = p.shipVolume / VOL_DIVISOR;
+    p.chw         = Math.max(p.weight, p.dimWeight);
     totalBoundingVolume += p.boundingVolume;
     totalDimWeight      += p.dimWeight;
     totalChw            += p.chw;
@@ -388,24 +395,28 @@ function packManualGroups(items, palletDim, gap = 0) {
     // Manual mode: user đã chọn pallet → cần fit tối đa kiện trong group.
     // Best-of-N (sort variations + random shuffles) tăng khả năng fit hết.
     const { packed, unpacked } = bestPackForGroup(groups[num], PW, PH, PD, gap);
-    let maxX = 0, maxY = 0, maxZ = 0, palletKg = 0;
+    let maxX = 0, maxY = 0, maxZ = 0, itemsKg = 0;
     for (const b of packed) {
       if (b.x + b.w > maxX) maxX = b.x + b.w;
       if (b.y + b.h > maxY) maxY = b.y + b.h;
       if (b.z + b.d > maxZ) maxZ = b.z + b.d;
-      palletKg += b.weight;
+      itemsKg += b.weight;
       totalActualItemVolume += b.w * b.h * b.d;
     }
     const bbox = { w:maxX, h:maxY, d:maxZ };
     const bboxVol = maxX * maxY * maxZ;
-    const palletDimWt = bboxVol / VOL_DIVISOR;
-    const palletChw = Math.max(palletKg, palletDimWt);
+    const shipHeight = maxY + PALLET_BASE_HEIGHT;
+    const shipVolume = PW * shipHeight * PD;
+    const palletKg   = itemsKg + PALLET_WEIGHT;
+    const palletDimWt = shipVolume / VOL_DIVISOR;
+    const palletChw   = Math.max(palletKg, palletDimWt);
     totalBoundingVolume += bboxVol;
     totalDimWeight      += palletDimWt;
     totalChw            += palletChw;
     pallets.push({
       packed, overflow: unpacked,
       boundingBox: bbox, boundingVolume: bboxVol,
+      itemsWeight: itemsKg, shipHeight, shipVolume,
       weight: palletKg, dimWeight: palletDimWt, chw: palletChw,
       manualPalletNum: num,
     });
@@ -623,13 +634,28 @@ function ScanTab({ result, onJumpToPallet }) {
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  const speak = (text) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "vi-VN"; u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+      window.speechSynthesis.speak(u);
+    } catch {}
+  };
+
   const doScan = useCallback((val) => {
     const id = (val || scanInput).trim();
     if (!id) return;
     if (!result) { alert("Chưa có dữ liệu! Chạy Optimization trước."); return; }
     const found = result.lookup[id];
-    if (found) { setScanResult(found); setNotFound(false); }
-    else { setScanResult(null); setNotFound(true); }
+    if (found) {
+      setScanResult(found); setNotFound(false);
+      speak(`Pallet ${found.palletNum}`);
+    } else {
+      setScanResult(null); setNotFound(true);
+      speak("Không tìm thấy");
+    }
     // Auto-clear input + refocus → kho 1 người scan liên tục không cần bấm "Scan tiếp"
     setScanInput("");
     setTimeout(() => inputRef.current?.focus(), 30);
@@ -1348,7 +1374,7 @@ export default function App() {
                           {cur.boundingBox.w.toFixed(0)}×{cur.boundingBox.d.toFixed(0)}×{cur.boundingBox.h.toFixed(0)}cm
                         </span>}
                         {cur && cur.packed.length > 0 && (
-                          <span style={{ color:"#42a5f5" }} title={`Pallet kg = ${cur.weight.toFixed(1)}, dim = bbox/6000 = ${cur.dimWeight.toFixed(1)}, CHW = max(kg, dim)`}>
+                          <span style={{ color:"#42a5f5" }} title={`items ${cur.itemsWeight?.toFixed(1)}kg + pallet ${PALLET_WEIGHT}kg = ${cur.weight.toFixed(1)}kg | dim = ${dim.w}×${dim.d}×${cur.shipHeight?.toFixed(0)} (items+${PALLET_BASE_HEIGHT}cm base) / 6000 = ${cur.dimWeight.toFixed(1)}kg | CHW = max`}>
                             {cur.weight.toFixed(1)}kg / CHW {cur.chw.toFixed(1)}kg
                           </span>
                         )}
