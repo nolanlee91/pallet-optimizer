@@ -573,9 +573,9 @@ function StatCard({ label, value, sub, icon, bar }) {
         <span style={LS}>{label}</span>
         <span className="material-symbols-outlined" style={{ fontSize:17,color:"#D32F2F" }}>{icon}</span>
       </div>
-      <div style={{ display:"flex",alignItems:"baseline",gap:7 }}>
-        <span style={{ fontFamily:"'Space Grotesk'",fontSize:24,fontWeight:700,color:"#fff",lineHeight:1 }}>{value}</span>
-        {sub&&<span style={{ fontSize:11,color:"#555",fontFamily:"'Inter'" }}>{sub}</span>}
+      <div style={{ display:"flex",alignItems:"baseline",gap:7,minWidth:0 }}>
+        <span className="stat-val" style={{ fontFamily:"'Space Grotesk'",fontSize:24,fontWeight:700,color:"#fff",lineHeight:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0 }}>{value}</span>
+        {sub&&<span style={{ fontSize:11,color:"#555",fontFamily:"'Inter'",whiteSpace:"nowrap" }}>{sub}</span>}
       </div>
       {bar!==undefined&&<div style={{ marginTop:9,height:3,background:"#2C2C2C",borderRadius:2 }}><div style={{ height:"100%",width:`${Math.min(100,bar)}%`,background:"#D32F2F",borderRadius:2,transition:"width .7s ease" }}/></div>}
     </div>
@@ -992,7 +992,7 @@ export default function App() {
         ::-webkit-scrollbar-thumb:hover{background:#D32F2F}
         .mobile-tabs{display:none;}
         @media (max-width: 768px) {
-          html,body{height:auto !important;overflow:visible !important;overscroll-behavior-y:auto;}
+          html,body{height:auto !important;overflow-x:hidden !important;overflow-y:visible !important;overscroll-behavior-y:auto;}
           .app-root{height:auto !important;min-height:100vh;overflow:visible !important;}
           .app-main{height:auto !important;min-height:calc(100vh - 44px) !important;overflow:visible !important;}
           .scan-scroll{overflow:visible !important;flex:none !important;}
@@ -1001,6 +1001,16 @@ export default function App() {
           .mobile-tabs{display:flex !important;}
           .app-header{height:44px !important;padding:0 12px !important;position:sticky;top:0;z-index:50;}
           .app-footer{display:none !important;}
+          /* Dashboard layout fixes */
+          .stat-row{display:grid !important;grid-template-columns:1fr 1fr !important;gap:6px !important;}
+          .stat-row > *{min-width:0 !important;flex:none !important;padding:10px 12px !important;}
+          .stat-row > * div[style*="font-size: 24"],.stat-row .stat-val{font-size:18px !important;}
+          .dashboard-grid{grid-template-columns:1fr !important;gap:10px !important;flex:none !important;}
+          .dashboard-grid > div{min-height:0 !important;}
+          .opt-buttons{flex-wrap:wrap !important;}
+          .opt-buttons > button{flex:1 1 100% !important;padding:11px 8px !important;}
+          .opt-buttons > button.opt-secondary{flex:1 1 calc(50% - 4px) !important;}
+          .viewer-3d{min-height:340px !important;height:340px !important;}
         }
       `}</style>
       <div className="app-root" style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#121212", color:"#f9dcd9", fontFamily:"'Inter',sans-serif" }}>
@@ -1207,14 +1217,14 @@ export default function App() {
                   </div>
                 );
               })()}
-              <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
+              <div className="stat-row" style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
                 <StatCard label="Total Items"       icon="inventory_2" value={result?`${result.totalPacked}/${result.totalItems}`:"—"} sub={result?`${result.pallets.length} pallet`:""} />
                 <StatCard label="Chargeable Weight" icon="weight"      value={result?`${result.cw.toFixed(1)}kg`:"—"} sub={result?`Dim: ${result.dimWeight.toFixed(1)}kg`:""} />
                 <StatCard label="Stack Density"     icon="percent"     value={result?`${result.utilization}%`:"—"} bar={result?+result.utilization:undefined} sub={result?"of bbox":""} />
                 <StatCard label="Pallet Type"       icon="view_in_ar"  value={result?`${dim.w}×${dim.d}`:"—"} sub={result?`×${dim.h}cm`:""} />
               </div>
 
-              <div style={{ display:"grid",gridTemplateColumns:"minmax(280px,390px) 1fr",gap:14,flex:1,minHeight:0 }}>
+              <div className="dashboard-grid" style={{ display:"grid",gridTemplateColumns:"minmax(280px,390px) 1fr",gap:14,flex:1,minHeight:0 }}>
                 <div style={{ display:"flex",flexDirection:"column",gap:12,minHeight:0 }}>
                   <div style={{ background:"#1E1E1E",border:"1px solid #2C2C2C" }}>
                     <div style={{ background:"#2C2C2C",padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8 }}>
@@ -1240,14 +1250,14 @@ export default function App() {
                           : "ID, Width, Height, Depth, Weight\nBOX-001, 40, 30, 20, 15"}
                         style={{ width:"100%",height:140,background:"#121212",border:"1px solid #2C2C2C",color:"#fff",fontFamily:"monospace",fontSize:11,padding:10,outline:"none",resize:"vertical",lineHeight:1.6,transition:"border-color .2s" }}
                         onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"} />
-                      <div style={{ display:"flex",gap:8,marginTop:8 }}>
+                      <div className="opt-buttons" style={{ display:"flex",gap:8,marginTop:8 }}>
                         <button onClick={handleOptimize} disabled={running}
                           style={{ flex:1,background:running?"#7a1a1a":"#D32F2F",color:"#fff",border:"none",padding:"9px 0",cursor:running?"wait":"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.14em",transition:"background .2s" }}
                           onMouseEnter={e=>{if(!running)e.currentTarget.style.background="#b52828";}} onMouseLeave={e=>{if(!running)e.currentTarget.style.background="#D32F2F";}}>
                           {running?"⟳ Computing...":`▶ Run ${mode==="manual"?"Manual":"Auto"} Optimization`}
                         </button>
                         {supabaseEnabled && result && (
-                          <button title="Lưu vào flight"
+                          <button title="Lưu vào flight" className="opt-secondary"
                             onClick={()=>{
                               if (!saveFlightName && currentFlightId) {
                                 const f = flights.find(x=>x.id===currentFlightId);
@@ -1259,7 +1269,7 @@ export default function App() {
                             💾 Lưu
                           </button>
                         )}
-                        <button onClick={()=>{
+                        <button className="opt-secondary" onClick={()=>{
                           updateRaw("");
                           if(mode==="manual"){ setResultManual(null); setTimingManual(null); }
                           else               { setResultAuto(null);   setTimingAuto(null);   }
@@ -1333,7 +1343,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ background:"#0c0c0c",border:"1px solid #2C2C2C",position:"relative",minHeight:460,overflow:"hidden" }}>
+                <div className="viewer-3d" style={{ background:"#0c0c0c",border:"1px solid #2C2C2C",position:"relative",minHeight:460,overflow:"hidden" }}>
                   {result&&cur&&cur.packed.length>0 ? (
                     <ErrorBoundary key={activePallet}>
                       <PalletViewer3D key={`${activePallet}-${highlightId}`} packedItems={cur.packed} palletIndex={activePallet} totalPallets={result.pallets.length} highlightId={highlightId} palletDim={dim} boundingBox={cur.boundingBox} />
