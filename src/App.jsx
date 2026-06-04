@@ -624,130 +624,116 @@ function ScanTab({ result, onJumpToPallet }) {
     else { setScanResult(null); setNotFound(true); }
   }, [scanInput, result]);
 
-  const handleKey = e => { if (e.key==="Enter") doScan(); };
+  const handleKey = e => { if (e.key === "Enter") doScan(); };
 
-  const clear = () => { setScanInput(""); setScanResult(null); setNotFound(false); inputRef.current?.focus(); };
+  const scanNext = () => {
+    setScanInput(""); setScanResult(null); setNotFound(false);
+    setTimeout(() => inputRef.current?.focus(), 30);
+  };
+
+  const tier = scanResult ? (
+    scanResult.item.y < 40 ? "Tầng 1 (Sàn)" :
+    scanResult.item.y < 90 ? "Tầng 2 (Giữa)" : "Tầng 3 (Trên)"
+  ) : "";
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:16, padding:"20px 16px", flex:1, overflow:"auto" }}>
+    <div style={{ flex:1, overflow:"auto", padding:"16px 14px", display:"flex", flexDirection:"column", gap:14, maxWidth:560, margin:"0 auto", width:"100%" }}>
 
-      <div style={{ background:"#1E1E1E", border:"1px solid #2C2C2C" }}>
-        <div style={{ background:"#2C2C2C", padding:"8px 14px", display:"flex", alignItems:"center", gap:10 }}>
-          <span className="material-symbols-outlined" style={{ fontSize:16, color:"#D32F2F" }}>qr_code_scanner</span>
-          <span style={{ ...LS, color:"#fff" }}>Warehouse Scan — Tra cứu kiện hàng</span>
+      {/* Input — to, dễ scan trên phone */}
+      <div style={{ background:"#1E1E1E", border:"1px solid #2C2C2C", padding:14 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <span className="material-symbols-outlined" style={{ fontSize:22, color:"#D32F2F" }}>qr_code_scanner</span>
+          <input
+            ref={inputRef}
+            value={scanInput}
+            onChange={e => { setScanInput(e.target.value); setScanResult(null); setNotFound(false); }}
+            onKeyDown={handleKey}
+            placeholder="Scan / nhập ID kiện..."
+            autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck="false"
+            style={{ flex:1, background:"#121212", border:"1px solid #2C2C2C", color:"#fff", fontFamily:"monospace", fontSize:16, padding:"12px 14px", outline:"none", letterSpacing:"0.05em", minWidth:0 }}
+            onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"}
+          />
+          {(scanInput || scanResult) && (
+            <button onClick={scanNext} title="Xoá"
+              style={{ background:"transparent", border:"1px solid #2C2C2C", color:"#888", padding:"10px 12px", cursor:"pointer", fontSize:16, lineHeight:1 }}>×</button>
+          )}
         </div>
-        <div style={{ padding:16 }}>
-          <div style={{ ...LS, marginBottom:8 }}>Nhập ID kiện (hoặc máy scan tự điền)</div>
-          <div style={{ display:"flex", gap:8 }}>
-            <input
-              ref={inputRef}
-              value={scanInput}
-              onChange={e => { setScanInput(e.target.value); setScanResult(null); setNotFound(false); }}
-              onKeyDown={handleKey}
-              placeholder="BOX-001 hoặc scan barcode..."
-              style={{ flex:1, background:"#121212", border:"1px solid #2C2C2C", color:"#fff", fontFamily:"monospace", fontSize:14, padding:"10px 14px", outline:"none", letterSpacing:"0.08em", transition:"border-color .2s" }}
-              onFocus={e=>e.target.style.borderColor="#D32F2F"}
-              onBlur={e=>e.target.style.borderColor="#2C2C2C"}
-            />
-            <button onClick={()=>doScan()} style={{ background:"#D32F2F", color:"#fff", border:"none", padding:"10px 20px", cursor:"pointer", fontFamily:"'Space Grotesk'", fontWeight:700, fontSize:11, textTransform:"uppercase", letterSpacing:"0.12em" }}
-              onMouseEnter={e=>e.currentTarget.style.background="#b52828"} onMouseLeave={e=>e.currentTarget.style.background="#D32F2F"}>
-              Tìm
-            </button>
-            <button onClick={clear} style={{ background:"transparent", border:"1px solid #2C2C2C", color:"#666", padding:"10px 14px", cursor:"pointer", fontFamily:"'Space Grotesk'", fontWeight:700, fontSize:11, textTransform:"uppercase" }}
-              onMouseEnter={e=>{e.currentTarget.style.background="#1E1E1E";e.currentTarget.style.color="#fff";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="#666";}}>
-              Clear
-            </button>
+        {!result && (
+          <div style={{ marginTop:10, padding:"10px 12px", background:"#1a0f0f", border:"1px solid #4a1a1a", color:"#ff6b6b", fontFamily:"'Space Grotesk'", fontSize:12 }}>
+            ⚠ Chưa có dữ liệu — chạy Optimization hoặc chọn flight đã lưu
           </div>
-          {!result && <div style={{ marginTop:10, padding:"10px 14px", background:"#1a0f0f", border:"1px solid #4a1a1a", color:"#ff6b6b", fontFamily:"'Space Grotesk'", fontSize:11 }}>
-            ⚠ Chưa có dữ liệu — vui lòng chạy Optimization trước ở tab Dashboard
-          </div>}
-        </div>
+        )}
       </div>
 
-      {notFound && (
-        <div style={{ background:"#1a0f0f", border:"1px solid #D32F2F", padding:"20px 24px", display:"flex", alignItems:"center", gap:14 }}>
-          <span className="material-symbols-outlined" style={{ fontSize:32, color:"#D32F2F" }}>search_off</span>
-          <div>
-            <div style={{ fontFamily:"'Space Grotesk'", fontSize:14, fontWeight:700, color:"#D32F2F" }}>Không tìm thấy: "{scanInput}"</div>
-            <div style={{ fontFamily:"'Inter'", fontSize:12, color:"#666", marginTop:4 }}>ID không tồn tại hoặc kiện không được xếp vào pallet nào.</div>
-          </div>
-        </div>
-      )}
-
+      {/* Result — pallet số TO ĐÙNG */}
       {scanResult && (
-        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-          <div style={{ background:"#1E1E1E", border:"2px solid #D32F2F", padding:"24px", position:"relative", overflow:"hidden" }}>
-            <div style={{ position:"absolute", top:0, right:0, width:120, height:120, background:"radial-gradient(circle, rgba(211,47,47,0.15), transparent 70%)", pointerEvents:"none" }} />
-
-            <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:16 }}>
-              <div>
-                <div style={{ ...LS, marginBottom:6 }}>Kiện hàng tìm thấy</div>
-                <div style={{ fontFamily:"'Space Grotesk'", fontSize:28, fontWeight:700, color:"#fff", letterSpacing:"-0.01em" }}>{scanResult.item.id}</div>
-              </div>
-              <div style={{ background:"#D32F2F", padding:"10px 20px", textAlign:"center" }}>
-                <div style={{ ...LS, color:"rgba(255,255,255,0.7)", marginBottom:4 }}>Pallet số</div>
-                <div style={{ fontFamily:"'Space Grotesk'", fontSize:36, fontWeight:700, color:"#fff", lineHeight:1 }}>{scanResult.palletNum}</div>
-              </div>
+        <>
+          <div style={{ background:"#D32F2F", padding:"28px 18px 22px", textAlign:"center", position:"relative", overflow:"hidden" }}>
+            <div style={{ ...LS, color:"rgba(255,255,255,0.85)", marginBottom:4 }}>{scanResult.item.id}</div>
+            <div style={{ ...LS, color:"rgba(255,255,255,0.7)", marginBottom:8 }}>ĐẶT VÀO PALLET</div>
+            <div style={{ fontFamily:"'Space Grotesk'", fontWeight:700, color:"#fff", lineHeight:1, fontSize:"clamp(96px, 32vw, 180px)" }}>
+              {scanResult.palletNum}
             </div>
+            {scanResult.order && (
+              <div style={{ marginTop:10, fontFamily:"'Space Grotesk'", fontSize:14, color:"rgba(255,255,255,0.9)", fontWeight:600 }}>
+                Thứ tự xếp: #{scanResult.order}
+              </div>
+            )}
+          </div>
 
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginTop:20 }}>
-              {[
-                ["Vị trí X", `${scanResult.item.x.toFixed(0)} cm`, "arrow_right_alt"],
-                ["Vị trí Y (cao)", `${scanResult.item.y.toFixed(0)} cm`, "height"],
-                ["Vị trí Z", `${scanResult.item.z.toFixed(0)} cm`, "arrow_right_alt"],
-                ["Kích thước", `${scanResult.item.w}×${scanResult.item.h}×${scanResult.item.d} cm`, "straighten"],
-                ["Cân nặng (kg)", `${scanResult.item.weight} kg`, "weight"],
-                ["CHW (kg)", `${Math.max(scanResult.item.weight, (scanResult.item.w*scanResult.item.h*scanResult.item.d)/6000).toFixed(2)} kg`, "scale"],
-                ["Tầng", scanResult.item.y < 40 ? "Tầng 1 (Sàn)" : scanResult.item.y < 90 ? "Tầng 2 (Giữa)" : "Tầng 3 (Trên)", "layers"],
-                ["Thứ tự xếp", `#${scanResult.order ?? "—"}`, "format_list_numbered"],
-              ].map(([label, val, icon]) => (
-                <div key={label} style={{ background:"#121212", padding:"12px 14px", border:"1px solid #2C2C2C" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
-                    <span className="material-symbols-outlined" style={{ fontSize:14, color:"#D32F2F" }}>{icon}</span>
-                    <span style={{ ...LS }}>{label}</span>
-                  </div>
-                  <div style={{ fontFamily:"'Space Grotesk'", fontSize:16, fontWeight:700, color:"#fff" }}>{val}</div>
+          {/* Position + dim — compact 2 cột */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {[
+              ["Tầng",        tier,                                                               "layers"],
+              ["Cao Y",       `${scanResult.item.y.toFixed(0)} cm`,                              "height"],
+              ["Vị trí X",    `${scanResult.item.x.toFixed(0)} cm`,                              "arrow_right_alt"],
+              ["Vị trí Z",    `${scanResult.item.z.toFixed(0)} cm`,                              "arrow_right_alt"],
+              ["Kích thước",  `${scanResult.item.w}×${scanResult.item.h}×${scanResult.item.d}`,  "straighten"],
+              ["KG / CHW",    `${scanResult.item.weight} / ${Math.max(scanResult.item.weight, (scanResult.item.w*scanResult.item.h*scanResult.item.d)/6000).toFixed(2)}`, "weight"],
+            ].map(([label, val, icon]) => (
+              <div key={label} style={{ background:"#1E1E1E", border:"1px solid #2C2C2C", padding:"10px 12px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:4 }}>
+                  <span className="material-symbols-outlined" style={{ fontSize:13, color:"#D32F2F" }}>{icon}</span>
+                  <span style={{ ...LS }}>{label}</span>
                 </div>
-              ))}
-            </div>
-
-            <button onClick={() => onJumpToPallet(scanResult.palletIndex, scanResult.item.id)}
-              style={{ marginTop:16, width:"100%", background:"transparent", border:"1px solid #D32F2F", color:"#D32F2F", padding:"10px 0", cursor:"pointer", fontFamily:"'Space Grotesk'", fontWeight:700, fontSize:11, textTransform:"uppercase", letterSpacing:"0.14em", display:"flex", alignItems:"center", justifyContent:"center", gap:8, transition:"all .2s" }}
-              onMouseEnter={e=>{e.currentTarget.style.background="#D32F2F";e.currentTarget.style.color="#fff";}}
-              onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="#D32F2F";}}>
-              <span className="material-symbols-outlined" style={{ fontSize:16 }}>view_in_ar</span>
-              Xem vị trí 3D trong Pallet {scanResult.palletNum}
-            </button>
+                <div style={{ fontFamily:"'Space Grotesk'", fontSize:15, fontWeight:700, color:"#fff" }}>{val}</div>
+              </div>
+            ))}
           </div>
 
-          <div style={{ background:"#121212", border:"1px solid #2C2C2C", padding:"14px 16px", display:"flex", gap:12, alignItems:"flex-start" }}>
-            <span className="material-symbols-outlined" style={{ fontSize:20, color:"#42a5f5", flexShrink:0 }}>info</span>
-            <div style={{ fontFamily:"'Inter'", fontSize:12, color:"#888", lineHeight:1.6 }}>
-              <strong style={{ color:"#fff" }}>Hướng dẫn xếp:</strong> Đưa kiện <strong style={{ color:"#fff" }}>{scanResult.item.id}</strong> vào{" "}
-              <strong style={{ color:"#D32F2F" }}>Pallet {scanResult.palletNum}</strong>{scanResult.order?` (kiện thứ #${scanResult.order})`:""}, đặt tại vị trí{" "}
-              X={scanResult.item.x.toFixed(0)}cm, Z={scanResult.item.z.toFixed(0)}cm tính từ góc trái phía trước,{" "}
-              cao {scanResult.item.y.toFixed(0)}cm từ sàn pallet.
-            </div>
-          </div>
-        </div>
+          {/* Big action buttons */}
+          <button onClick={scanNext}
+            style={{ background:"#D32F2F", color:"#fff", border:"none", padding:"16px 0", cursor:"pointer", fontFamily:"'Space Grotesk'", fontWeight:700, fontSize:14, textTransform:"uppercase", letterSpacing:"0.14em" }}>
+            ▶ Scan tiếp
+          </button>
+          <button onClick={() => onJumpToPallet(scanResult.palletIndex, scanResult.item.id)}
+            style={{ background:"transparent", border:"1px solid #2C2C2C", color:"#888", padding:"12px 0", cursor:"pointer", fontFamily:"'Space Grotesk'", fontWeight:700, fontSize:11, textTransform:"uppercase", letterSpacing:"0.14em" }}>
+            Xem vị trí 3D
+          </button>
+        </>
       )}
 
+      {/* Not found */}
+      {notFound && (
+        <>
+          <div style={{ background:"#1a0f0f", border:"2px solid #D32F2F", padding:"30px 18px", textAlign:"center" }}>
+            <span className="material-symbols-outlined" style={{ fontSize:60, color:"#D32F2F" }}>search_off</span>
+            <div style={{ fontFamily:"'Space Grotesk'", fontSize:18, fontWeight:700, color:"#D32F2F", marginTop:8 }}>KHÔNG TÌM THẤY</div>
+            <div style={{ fontFamily:"monospace", fontSize:14, color:"#fff", marginTop:6, wordBreak:"break-all" }}>{scanInput}</div>
+            <div style={{ fontFamily:"'Inter'", fontSize:11, color:"#888", marginTop:8 }}>ID không có trong flight hiện tại</div>
+          </div>
+          <button onClick={scanNext}
+            style={{ background:"#D32F2F", color:"#fff", border:"none", padding:"16px 0", cursor:"pointer", fontFamily:"'Space Grotesk'", fontWeight:700, fontSize:14, textTransform:"uppercase", letterSpacing:"0.14em" }}>
+            ▶ Scan tiếp
+          </button>
+        </>
+      )}
+
+      {/* Idle hint — gọn */}
       {!scanResult && !notFound && result && (
-        <div style={{ background:"#1E1E1E", border:"1px solid #2C2C2C" }}>
-          <div style={{ background:"#2C2C2C", padding:"7px 14px" }}>
-            <span style={{ ...LS, color:"#fff" }}>Gợi ý — {result.totalItems} kiện đã optimize</span>
-          </div>
-          <div style={{ padding:14, display:"flex", flexWrap:"wrap", gap:6 }}>
-            {Object.keys(result.lookup).slice(0,20).map(id => (
-              <button key={id} onClick={()=>{ setScanInput(id); doScan(id); }}
-                style={{ padding:"5px 10px", background:"#252525", border:"1px solid #2C2C2C", color:"#888", fontFamily:"monospace", fontSize:11, cursor:"pointer", transition:"all .15s" }}
-                onMouseEnter={e=>{e.currentTarget.style.background="#D32F2F";e.currentTarget.style.color="#fff";e.currentTarget.style.borderColor="#D32F2F";}}
-                onMouseLeave={e=>{e.currentTarget.style.background="#252525";e.currentTarget.style.color="#888";e.currentTarget.style.borderColor="#2C2C2C";}}>
-                {id}
-              </button>
-            ))}
-            {result.totalItems>20 && <span style={{ ...LS, padding:"5px 6px" }}>+{result.totalItems-20} more...</span>}
-          </div>
+        <div style={{ ...LS, color:"#555", textAlign:"center", padding:"40px 10px", lineHeight:1.8 }}>
+          {result.totalItems} kiện trên {result.pallets.length} pallet<br/>
+          Scan hoặc nhập ID để tra cứu
         </div>
       )}
     </div>
@@ -977,10 +963,24 @@ export default function App() {
   return (
     <>
       <FontLink />
-      <style>{`*{box-sizing:border-box;}::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#121212}::-webkit-scrollbar-thumb{background:#2C2C2C}::-webkit-scrollbar-thumb:hover{background:#D32F2F}`}</style>
+      <style>{`
+        *{box-sizing:border-box;}
+        ::-webkit-scrollbar{width:4px}
+        ::-webkit-scrollbar-track{background:#121212}
+        ::-webkit-scrollbar-thumb{background:#2C2C2C}
+        ::-webkit-scrollbar-thumb:hover{background:#D32F2F}
+        .mobile-tabs{display:none;}
+        @media (max-width: 768px) {
+          .app-sidebar{display:none !important;}
+          .desktop-only{display:none !important;}
+          .mobile-tabs{display:flex !important;}
+          .app-header{height:44px !important;padding:0 12px !important;}
+          .app-footer{display:none !important;}
+        }
+      `}</style>
       <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#121212", color:"#f9dcd9", fontFamily:"'Inter',sans-serif" }}>
 
-        <aside style={{ width:228, flexShrink:0, background:"#1E1E1E", borderRight:"1px solid #2C2C2C", display:"flex", flexDirection:"column" }}>
+        <aside className="app-sidebar" style={{ width:228, flexShrink:0, background:"#1E1E1E", borderRight:"1px solid #2C2C2C", display:"flex", flexDirection:"column" }}>
           <div style={{ padding:"18px 18px 10px" }}>
             <div style={{ fontFamily:"'Space Grotesk'", fontSize:16, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.1em", color:"#fff" }}>3D Optimizer</div>
             <div style={{ ...LS, marginTop:2 }}>Command Center</div>
@@ -1101,11 +1101,24 @@ export default function App() {
         </aside>
 
         <main style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
-          <header style={{ height:52,background:"#121212",borderBottom:"1px solid #2C2C2C",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",flexShrink:0 }}>
-            <span style={{ fontFamily:"'Space Grotesk'",fontSize:14,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.14em",color:"#fff" }}>
+          <header className="app-header" style={{ height:52,background:"#121212",borderBottom:"1px solid #2C2C2C",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",flexShrink:0,gap:10 }}>
+            <span style={{ fontFamily:"'Space Grotesk'",fontSize:14,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.14em",color:"#fff",whiteSpace:"nowrap" }}>
               {tab==="scan" ? "Warehouse Scan" : "3D Pallet Optimizer"}
             </span>
-            <div style={{ display:"flex",alignItems:"center",gap:14 }}>
+            {/* Mobile tab nav — chỉ hiện trên phone */}
+            <div className="mobile-tabs" style={{ display:"none",gap:0,flex:1,marginLeft:8 }}>
+              {[["dashboard","DASH"],["scan","SCAN"]].map(([id,label])=>(
+                <button key={id} onClick={()=>setTab(id)}
+                  style={{ flex:1,padding:"8px 0",background:tab===id?"#D32F2F":"#1E1E1E",color:tab===id?"#fff":"#888",border:"1px solid #2C2C2C",cursor:"pointer",fontFamily:"'Space Grotesk'",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em" }}>
+                  {label}
+                </button>
+              ))}
+              {supabaseEnabled && session && (
+                <button onClick={handleLogout} title="Đăng xuất"
+                  style={{ padding:"8px 10px",background:"#1E1E1E",color:"#666",border:"1px solid #2C2C2C",cursor:"pointer",fontSize:13 }}>⏻</button>
+              )}
+            </div>
+            <div className="desktop-only" style={{ display:"flex",alignItems:"center",gap:14 }}>
               <div style={{ display:"flex",alignItems:"center",background:"#1E1E1E",border:"1px solid #2C2C2C",padding:"5px 10px",gap:6 }}>
                 <span className="material-symbols-outlined" style={{fontSize:13,color:"#555"}}>search</span>
                 <input placeholder="SEARCH SHIPMENT ID..." style={{ background:"transparent",border:"none",outline:"none",color:"#fff",fontFamily:"'Space Grotesk'",fontSize:10,letterSpacing:"0.12em",textTransform:"uppercase",width:130 }} />
@@ -1114,6 +1127,19 @@ export default function App() {
               <span className="material-symbols-outlined" style={{fontSize:18,color:"#555",cursor:"pointer"}}>account_circle</span>
             </div>
           </header>
+
+          {/* Mobile flight picker — hiện khi có flights, gọn 1 dòng */}
+          {supabaseEnabled && flights.length > 0 && (
+            <div className="mobile-tabs" style={{ display:"none",padding:"6px 10px",background:"#0c0c0c",borderBottom:"1px solid #2C2C2C",gap:6,overflowX:"auto",alignItems:"center" }}>
+              <span style={{ ...LS, color:"#666", whiteSpace:"nowrap" }}>Flight:</span>
+              {flights.map(f => (
+                <button key={f.id} onClick={()=>handleLoadFlight(f.id)}
+                  style={{ padding:"5px 10px",background:currentFlightId===f.id?"#D32F2F":"#1E1E1E",color:"#fff",border:"1px solid #2C2C2C",cursor:"pointer",fontFamily:"'Space Grotesk'",fontSize:10,fontWeight:600,whiteSpace:"nowrap",flexShrink:0 }}>
+                  {f.name}
+                </button>
+              ))}
+            </div>
+          )}
 
           {tab==="scan" && (
             <ScanTab result={result} onJumpToPallet={handleJumpToPallet} />
@@ -1304,7 +1330,7 @@ export default function App() {
             </div>
           )}
 
-          <footer style={{ height:26,background:"#121212",borderTop:"1px solid #2C2C2C",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",flexShrink:0 }}>
+          <footer className="app-footer" style={{ height:26,background:"#121212",borderTop:"1px solid #2C2C2C",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",flexShrink:0 }}>
             <div style={{ display:"flex",alignItems:"center",gap:8 }}>
               <span style={LS}>System Status: Nominal</span>
               <div style={{ width:5,height:5,borderRadius:"50%",background:"#10B981",boxShadow:"0 0 5px rgba(16,185,129,.8)" }} />
