@@ -50,17 +50,25 @@ const LS = { fontFamily:"'Space Grotesk'", fontSize:9, fontWeight:700, color:"#5
 // ─── PARSER ───────────────────────────────────────────────────────────────────
 // manual=true → bắt buộc cột thứ 6 là số pallet sếp chỉ định.
 // Trả về { items, skipped }. skipped là array { id, lineNo, reason } để UI cảnh báo.
+// Dòng tiêu đề (cell numeric đều là chữ) được auto-skip im lặng — không tính bỏ qua.
 function parseExcelPaste(raw, manual = false) {
   const items = [];
   const skipped = [];
   const minCols = manual ? 6 : 5;
   const lines = raw.split("\n");
+  let headerSkipped = false;
   for (let li = 0; li < lines.length; li++) {
     const t = lines[li].trim(); if (!t) continue;
     const sep = t.includes("\t") ? "\t" : ",";
     const cols = t.split(sep).map(c => c.trim());
     const [id, c1, c2, c3, c4, c5] = cols;
     const lineNo = li + 1;
+    // Auto-skip header row (dòng đầu tiên không có số trong cột W/H/D/Weight)
+    if (!headerSkipped && items.length === 0 && skipped.length === 0 &&
+        isNaN(+c1) && isNaN(+c2) && isNaN(+c3) && isNaN(+c4)) {
+      headerSkipped = true;
+      continue;
+    }
     if (cols.length < minCols) {
       skipped.push({ id: id || "(no id)", lineNo, reason: `thiếu cột (${cols.length}/${minCols})` });
       continue;
