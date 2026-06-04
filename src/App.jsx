@@ -992,7 +992,8 @@ export default function App() {
         ::-webkit-scrollbar-thumb:hover{background:#D32F2F}
         .mobile-tabs{display:none;}
         @media (max-width: 768px) {
-          html,body{height:auto !important;overflow-x:hidden !important;overflow-y:visible !important;overscroll-behavior-y:auto;}
+          /* Layout */
+          html,body{height:auto !important;overflow-x:hidden !important;overflow-y:visible !important;overscroll-behavior-y:auto;color-scheme:light;}
           .app-root{height:auto !important;min-height:100vh;overflow:visible !important;}
           .app-main{height:auto !important;min-height:calc(100vh - 44px) !important;overflow:visible !important;}
           .scan-scroll{overflow:visible !important;flex:none !important;}
@@ -1001,16 +1002,54 @@ export default function App() {
           .mobile-tabs{display:flex !important;}
           .app-header{height:44px !important;padding:0 12px !important;position:sticky;top:0;z-index:50;}
           .app-footer{display:none !important;}
-          /* Dashboard layout fixes */
           .stat-row{display:grid !important;grid-template-columns:1fr 1fr !important;gap:6px !important;}
           .stat-row > *{min-width:0 !important;flex:none !important;padding:10px 12px !important;}
-          .stat-row > * div[style*="font-size: 24"],.stat-row .stat-val{font-size:18px !important;}
+          .stat-row .stat-val{font-size:18px !important;}
           .dashboard-grid{grid-template-columns:1fr !important;gap:10px !important;flex:none !important;}
           .dashboard-grid > div{min-height:0 !important;}
           .opt-buttons{flex-wrap:wrap !important;}
           .opt-buttons > button{flex:1 1 100% !important;padding:11px 8px !important;}
           .opt-buttons > button.opt-secondary{flex:1 1 calc(50% - 4px) !important;}
           .viewer-3d{min-height:340px !important;height:340px !important;}
+
+          /* ───── LIGHT THEME ───── */
+          html,body{background:#f5f5f5 !important;color:#111 !important;}
+          .app-root{background:#f5f5f5 !important;color:#111 !important;}
+          ::-webkit-scrollbar-track{background:#eee !important;}
+          ::-webkit-scrollbar-thumb{background:#ccc !important;}
+
+          /* Backgrounds — dark → light variants */
+          [style*="background:#121212" i]{background-color:#f5f5f5 !important;}
+          [style*="background:#1E1E1E" i],[style*="background:#1e1e1e" i]{background-color:#fff !important;}
+          [style*="background:#0c0c0c" i]{background-color:#eee !important;}
+          .viewer-3d{background-color:#1a1a1a !important;} /* 3D screen giữ tối, contrast cao */
+          [style*="background:#2C2C2C" i],[style*="background:#2c2c2c" i]{background-color:#e8e8e8 !important;}
+          [style*="background:#252525" i]{background-color:#f0f0f0 !important;}
+          [style*="background:#1a0f0f" i]{background-color:#ffe5e5 !important;}
+          [style*="background:#191919" i]{background-color:#ededed !important;}
+          [style*="background:#2a1010" i]{background-color:#ffd0d0 !important;}
+          [style*="background:#2a1f0a" i]{background-color:#fff3cf !important;}
+          [style*="background:#1a1408" i]{background-color:#fffae0 !important;}
+          [style*="background:#333" i]{background-color:#bbb !important;}
+          [style*="background:#3a3a3a" i]{background-color:#ccc !important;}
+
+          /* Text colors — dark text on light bg. Loại trừ buttons đỏ/xanh */
+          [style*="color:#fff" i]:not([style*="background:#D32F2F" i]):not([style*="background:#d32f2f" i]):not([style*="background:#42a5f5" i]):not([style*="background:#b52828" i]):not([style*="background:#7a1a1a" i]){color:#111 !important;}
+          [style*="color:#f9dcd9" i]{color:#111 !important;}
+          [style*="color:#888" i]{color:#555 !important;}
+          [style*="color:#666" i]{color:#555 !important;}
+          [style*="color:#555" i]{color:#666 !important;}
+          [style*="color:#ccc" i]{color:#222 !important;}
+          [style*="color:#444" i]{color:#666 !important;}
+
+          /* Borders */
+          [style*="border:1px solid #2C2C2C" i],[style*="border:1px solid #2c2c2c" i]{border-color:#ddd !important;}
+          [style*="border:1px solid #3a3a3a" i]{border-color:#ccc !important;}
+          [style*="border:2px solid #D32F2F" i],[style*="border:2px solid #d32f2f" i]{border-color:#D32F2F !important;}
+
+          /* Input/textarea */
+          input,textarea{background:#fff !important;color:#111 !important;border-color:#ccc !important;}
+          input::placeholder,textarea::placeholder{color:#999 !important;}
         }
       `}</style>
       <div className="app-root" style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#121212", color:"#f9dcd9", fontFamily:"'Inter',sans-serif" }}>
