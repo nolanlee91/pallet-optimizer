@@ -634,46 +634,12 @@ function ScanTab({ result, onJumpToPallet }) {
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  // Đọc số tiếng Việt: 1=một, 2=hai, 21=hai mươi mốt, etc. Tránh browser đọc "one/two".
-  const VN_DIGITS = ["không","một","hai","ba","bốn","năm","sáu","bảy","tám","chín"];
-  const vnNumber = (n) => {
-    n = Math.floor(n);
-    if (n < 0 || n > 999) return String(n);
-    if (n < 10) return VN_DIGITS[n];
-    if (n === 10) return "mười";
-    if (n < 20) {
-      const o = n - 10;
-      return "mười " + (o === 5 ? "lăm" : VN_DIGITS[o]);
-    }
-    if (n < 100) {
-      const t = Math.floor(n / 10), o = n % 10;
-      let s = VN_DIGITS[t] + " mươi";
-      if (o === 1) s += " mốt";
-      else if (o === 4) s += " tư";
-      else if (o === 5) s += " lăm";
-      else if (o > 0) s += " " + VN_DIGITS[o];
-      return s;
-    }
-    const h = Math.floor(n / 100), rest = n % 100;
-    let s = VN_DIGITS[h] + " trăm";
-    if (rest > 0) {
-      if (rest < 10) s += " linh " + VN_DIGITS[rest];
-      else s += " " + vnNumber(rest);
-    }
-    return s;
-  };
-
   const speak = (text) => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
     try {
       window.speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
-      const voices = window.speechSynthesis.getVoices();
-      const vn = voices.find(v => v.lang === "vi-VN" || v.lang === "vi_VN")
-              || voices.find(v => v.lang?.toLowerCase().startsWith("vi"));
-      if (vn) { u.voice = vn; u.lang = vn.lang; }
-      else { u.lang = "vi-VN"; }
-      u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+      u.lang = "en-US"; u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
       window.speechSynthesis.speak(u);
     } catch {}
   };
@@ -685,10 +651,10 @@ function ScanTab({ result, onJumpToPallet }) {
     const found = result.lookup[id];
     if (found) {
       setScanResult(found); setNotFound(false);
-      speak(vnNumber(found.palletNum));
+      speak(String(found.palletNum));
     } else {
       setScanResult(null); setNotFound(true);
-      speak("không có");
+      speak("not found");
     }
     // Auto-clear input + refocus → kho 1 người scan liên tục không cần bấm "Scan tiếp"
     setScanInput("");
