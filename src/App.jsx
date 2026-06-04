@@ -49,24 +49,40 @@ const LS = { fontFamily:"'Space Grotesk'", fontSize:9, fontWeight:700, color:"#5
 
 // ─── PARSER ───────────────────────────────────────────────────────────────────
 // manual=true → bắt buộc cột thứ 6 là số pallet sếp chỉ định.
+// Trả về { items, skipped }. skipped là array { id, lineNo, reason } để UI cảnh báo.
 function parseExcelPaste(raw, manual = false) {
   const items = [];
+  const skipped = [];
   const minCols = manual ? 6 : 5;
-  for (const line of raw.split("\n")) {
-    const t = line.trim(); if (!t) continue;
+  const lines = raw.split("\n");
+  for (let li = 0; li < lines.length; li++) {
+    const t = lines[li].trim(); if (!t) continue;
     const sep = t.includes("\t") ? "\t" : ",";
     const cols = t.split(sep).map(c => c.trim());
-    if (cols.length < minCols) continue;
     const [id, c1, c2, c3, c4, c5] = cols;
-    if (isNaN(+c1) || isNaN(+c2) || isNaN(+c3) || isNaN(+c4)) continue;
-    if (manual && (isNaN(+c5) || +c5 < 1)) continue;
+    const lineNo = li + 1;
+    if (cols.length < minCols) {
+      skipped.push({ id: id || "(no id)", lineNo, reason: `thiếu cột (${cols.length}/${minCols})` });
+      continue;
+    }
+    if (isNaN(+c1) || isNaN(+c2) || isNaN(+c3) || isNaN(+c4)) {
+      skipped.push({ id: id || "(no id)", lineNo, reason: "W/H/D/Weight không phải số" });
+      continue;
+    }
+    if (manual && (isNaN(+c5) || +c5 < 1)) {
+      skipped.push({ id: id || "(no id)", lineNo, reason: "Pallet# không hợp lệ" });
+      continue;
+    }
     const w = Math.abs(+c1), h = Math.abs(+c2), d = Math.abs(+c3), wt = Math.abs(+c4);
-    if (!w || !h || !d) continue;
+    if (!w || !h || !d) {
+      skipped.push({ id: id || "(no id)", lineNo, reason: "W/H/D = 0" });
+      continue;
+    }
     const item = { id: id || `BOX-${items.length+1}`, width:w, height:h, depth:d, weight:wt };
     if (manual) item.palletNum = Math.max(1, Math.round(+c5));
     items.push(item);
   }
-  return items;
+  return { items, skipped };
 }
 
 // ─── PACKING — heightmap approach ─────────────────────────────────────────────
@@ -808,6 +824,8 @@ export default function App() {
   const [showSaveModal,  setShowSaveModal]  = useState(false);
   const [saveFlightName, setSaveFlightName] = useState("");
   const [saving,         setSaving]         = useState(false);
+  const [parseWarnings,  setParseWarnings]  = useState(null);
+  const [showWarnings,   setShowWarnings]   = useState(false);
 
   useEffect(() => {
     if (!supabaseEnabled) return;
@@ -854,7 +872,8 @@ export default function App() {
     const t0 = performance.now();
     setTimeout(() => {
       try {
-        const items = parseExcelPaste(raw, mode === "manual");
+        const { items, skipped } = parseExcelPaste(raw, mode === "manual");
+        setParseWarnings(skipped.length > 0 ? skipped : null);
         if (!items.length) {
           alert(mode === "manual"
             ? "Không có dữ liệu hợp lệ!\nFormat Manual: ID, Width, Height, Depth, Weight, Pallet#"
@@ -1102,6 +1121,41 @@ export default function App() {
 
           {tab==="dashboard" && (
             <div style={{ flex:1,overflow:"auto",padding:"14px 16px",display:"flex",flexDirection:"column",gap:14 }}>
+              {parseWarnings && parseWarnings.length > 0 && (() => {
+                const byReason = {};
+                parseWarnings.forEach(w => { byReason[w.reason] = (byReason[w.reason] || 0) + 1; });
+                return (
+                  <div style={{ background:"#2a1f0a", border:"1px solid #6b4a1a" }}>
+                    <button onClick={()=>setShowWarnings(!showWarnings)}
+                      style={{ width:"100%",background:"transparent",border:"none",color:"#ffa726",padding:"10px 14px",cursor:"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em",display:"flex",justifyContent:"space-between",alignItems:"center",textAlign:"left" }}>
+                      <span>⚠ {parseWarnings.length} kiện bị bỏ qua khi parse — {Object.entries(byReason).map(([r,n])=>`${n}× ${r}`).join("  |  ")}</span>
+                      <span style={{ fontSize:14 }}>{showWarnings?"▲":"▼"}</span>
+                    </button>
+                    {showWarnings && (
+                      <div style={{ maxHeight:200, overflowY:"auto", borderTop:"1px solid #6b4a1a", padding:"8px 14px", background:"#1a1408" }}>
+                        <table style={{ width:"100%", fontFamily:"monospace", fontSize:10, color:"#ccc" }}>
+                          <thead>
+                            <tr style={{ color:"#888" }}>
+                              <th style={{ textAlign:"left", padding:"4px 8px" }}>Dòng</th>
+                              <th style={{ textAlign:"left", padding:"4px 8px" }}>ID</th>
+                              <th style={{ textAlign:"left", padding:"4px 8px" }}>Lý do</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {parseWarnings.map((w,i)=>(
+                              <tr key={i} style={{ borderTop:"1px solid #2a1f0a" }}>
+                                <td style={{ padding:"3px 8px", color:"#666" }}>{w.lineNo}</td>
+                                <td style={{ padding:"3px 8px" }}>{w.id}</td>
+                                <td style={{ padding:"3px 8px", color:"#ffa726" }}>{w.reason}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
                 <StatCard label="Total Items"       icon="inventory_2" value={result?`${result.totalPacked}/${result.totalItems}`:"—"} sub={result?`${result.pallets.length} pallet`:""} />
                 <StatCard label="Chargeable Weight" icon="weight"      value={result?`${result.cw.toFixed(1)}kg`:"—"} sub={result?`Dim: ${result.dimWeight.toFixed(1)}kg`:""} />
@@ -1282,7 +1336,7 @@ export default function App() {
               style={{ width:"100%",background:"#121212",border:"1px solid #2C2C2C",color:"#fff",fontFamily:"monospace",fontSize:12,padding:"9px 12px",outline:"none",marginBottom:14 }}
               onFocus={e=>e.target.style.borderColor="#D32F2F"} onBlur={e=>e.target.style.borderColor="#2C2C2C"} />
             <div style={{ ...LS, color:"#666", fontSize:9, marginBottom:14, lineHeight:1.5 }}>
-              Lưu: {mode==="manual"?"Manual":"Auto"} mode • {dim.w}×{dim.d}×{dim.h}cm • gap {gap}cm • {parseExcelPaste(raw, mode==="manual").length} kiện input
+              Lưu: {mode==="manual"?"Manual":"Auto"} mode • {dim.w}×{dim.d}×{dim.h}cm • gap {gap}cm • {parseExcelPaste(raw, mode==="manual").items.length} kiện input
             </div>
             <div style={{ display:"flex", gap:8 }}>
               <button onClick={handleSaveFlight} disabled={saving||!saveFlightName.trim()}
