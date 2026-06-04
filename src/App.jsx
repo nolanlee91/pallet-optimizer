@@ -637,7 +637,7 @@ function ScanTab({ result, onJumpToPallet }) {
   ) : "";
 
   return (
-    <div style={{ flex:1, overflow:"auto", padding:"16px 14px", display:"flex", flexDirection:"column", gap:14, maxWidth:560, margin:"0 auto", width:"100%" }}>
+    <div className="scan-scroll" style={{ flex:1, overflow:"auto", padding:"16px 14px", display:"flex", flexDirection:"column", gap:14, maxWidth:560, margin:"0 auto", width:"100%" }}>
 
       {/* Input — to, dễ scan trên phone */}
       <div style={{ background:"#1E1E1E", border:"1px solid #2C2C2C", padding:14 }}>
@@ -806,7 +806,10 @@ export default function App() {
   const [session,        setSession]        = useState(null);
   const [authChecked,    setAuthChecked]    = useState(!supabaseEnabled);
   const [flights,        setFlights]        = useState([]);
-  const [currentFlightId,setCurrentFlightId]= useState(null);
+  const [currentFlightId,setCurrentFlightId]= useState(() => {
+    try { return localStorage.getItem("pallet:currentFlightId") || null; } catch { return null; }
+  });
+  const [autoLoadAttempted, setAutoLoadAttempted] = useState(false);
   const [showSaveModal,  setShowSaveModal]  = useState(false);
   const [saveFlightName, setSaveFlightName] = useState("");
   const [saving,         setSaving]         = useState(false);
@@ -833,6 +836,24 @@ export default function App() {
   }, [session]);
 
   useEffect(() => { refreshFlights(); }, [refreshFlights]);
+
+  // Persist currentFlightId → localStorage để refresh không mất state
+  useEffect(() => {
+    try {
+      if (currentFlightId) localStorage.setItem("pallet:currentFlightId", currentFlightId);
+      else localStorage.removeItem("pallet:currentFlightId");
+    } catch {}
+  }, [currentFlightId]);
+
+  // Auto-load flight sau khi flights về (lần đầu mount, chỉ 1 lần)
+  useEffect(() => {
+    if (autoLoadAttempted || !session || flights.length === 0 || !currentFlightId) return;
+    if (flights.find(f => f.id === currentFlightId)) {
+      handleLoadFlight(currentFlightId);
+    }
+    setAutoLoadAttempted(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flights, session, currentFlightId, autoLoadAttempted]);
 
   // Derived (theo mode hiện tại)
   const raw    = mode === "auto" ? rawAuto    : rawManual;
@@ -971,14 +992,18 @@ export default function App() {
         ::-webkit-scrollbar-thumb:hover{background:#D32F2F}
         .mobile-tabs{display:none;}
         @media (max-width: 768px) {
+          html,body{height:auto !important;overflow:visible !important;overscroll-behavior-y:auto;}
+          .app-root{height:auto !important;min-height:100vh;overflow:visible !important;}
+          .app-main{height:auto !important;min-height:calc(100vh - 44px) !important;overflow:visible !important;}
+          .scan-scroll{overflow:visible !important;flex:none !important;}
           .app-sidebar{display:none !important;}
           .desktop-only{display:none !important;}
           .mobile-tabs{display:flex !important;}
-          .app-header{height:44px !important;padding:0 12px !important;}
+          .app-header{height:44px !important;padding:0 12px !important;position:sticky;top:0;z-index:50;}
           .app-footer{display:none !important;}
         }
       `}</style>
-      <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#121212", color:"#f9dcd9", fontFamily:"'Inter',sans-serif" }}>
+      <div className="app-root" style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#121212", color:"#f9dcd9", fontFamily:"'Inter',sans-serif" }}>
 
         <aside className="app-sidebar" style={{ width:228, flexShrink:0, background:"#1E1E1E", borderRight:"1px solid #2C2C2C", display:"flex", flexDirection:"column" }}>
           <div style={{ padding:"18px 18px 10px" }}>
@@ -1100,7 +1125,7 @@ export default function App() {
           </div>
         </aside>
 
-        <main style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
+        <main className="app-main" style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
           <header className="app-header" style={{ height:52,background:"#121212",borderBottom:"1px solid #2C2C2C",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",flexShrink:0,gap:10 }}>
             <span style={{ fontFamily:"'Space Grotesk'",fontSize:14,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.14em",color:"#fff",whiteSpace:"nowrap" }}>
               {tab==="scan" ? "Warehouse Scan" : "3D Pallet Optimizer"}
