@@ -630,6 +630,9 @@ function ScanTab({ result, onJumpToPallet }) {
     const found = result.lookup[id];
     if (found) { setScanResult(found); setNotFound(false); }
     else { setScanResult(null); setNotFound(true); }
+    // Auto-clear input + refocus → kho 1 người scan liên tục không cần bấm "Scan tiếp"
+    setScanInput("");
+    setTimeout(() => inputRef.current?.focus(), 30);
   }, [scanInput, result]);
 
   const handleKey = e => { if (e.key === "Enter") doScan(); };
