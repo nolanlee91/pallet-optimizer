@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, Component } from "react";
 import * as THREE from "three";
+import * as XLSX from "xlsx";
 import { supabase, supabaseEnabled } from "./supabaseClient";
 
 // ─── FONTS ────────────────────────────────────────────────────────────────────
@@ -945,6 +946,86 @@ export default function App() {
   };
 
   // ─── Flight handlers ───────────────────────────────────────────────────────
+  const handleExportExcel = () => {
+    if (!result) { alert("Chưa có dữ liệu! Chạy Optimization trước."); return; }
+    const flightName = currentFlightId ? (flights.find(f=>f.id===currentFlightId)?.name || "flight") : "export";
+    const pdim = result.palletDim || dim;
+
+    // Sheet 1: Loading list (mỗi dòng 1 kiện, sort theo pallet rồi thứ tự xếp)
+    const loadingRows = [];
+    result.pallets.forEach((p, pi) => {
+      p.packed.forEach((item, idx) => {
+        loadingRows.push({
+          "Pallet":     p.manualPalletNum ?? (pi + 1),
+          "Thứ tự":     idx + 1,
+          "ID":         item.id,
+          "W (cm)":     item.w,
+          "H (cm)":     item.h,
+          "D (cm)":     item.d,
+          "X":          Math.round(item.x),
+          "Y":          Math.round(item.y),
+          "Z":          Math.round(item.z),
+          "Tầng":       item.y < 40 ? "1 Sàn" : item.y < 90 ? "2 Giữa" : "3 Trên",
+          "Kg":         item.weight,
+          "CHW (kg)":   +Math.max(item.weight, (item.w*item.h*item.d)/VOL_DIVISOR).toFixed(2),
+        });
+      });
+      // Overflow items (manual mode)
+      (p.overflow || []).forEach((item, idx) => {
+        loadingRows.push({
+          "Pallet":     `${p.manualPalletNum ?? (pi + 1)} (THỪA)`,
+          "Thứ tự":     `T${idx + 1}`,
+          "ID":         item.id,
+          "W (cm)":     item.width,
+          "H (cm)":     item.height,
+          "D (cm)":     item.depth,
+          "X": "", "Y": "", "Z": "", "Tầng": "không xếp được",
+          "Kg":         item.weight,
+          "CHW (kg)":   +Math.max(item.weight, (item.width*item.height*item.depth)/VOL_DIVISOR).toFixed(2),
+        });
+      });
+    });
+
+    // Sheet 2: Pallet summary
+    const palletRows = result.pallets.map((p, pi) => ({
+      "Pallet":           p.manualPalletNum ?? (pi + 1),
+      "Số kiện":          p.packed.length,
+      "Thừa":             p.overflow?.length || 0,
+      "Pallet W×D×H (cm)":`${pdim.w}×${pdim.d}×${pdim.h}`,
+      "Items bbox":       p.boundingBox ? `${Math.round(p.boundingBox.w)}×${Math.round(p.boundingBox.d)}×${Math.round(p.boundingBox.h)}` : "",
+      "Ship height":      p.shipHeight ? Math.round(p.shipHeight) : "",
+      "Items kg":         (p.itemsWeight || 0).toFixed(1),
+      "+ Pallet kg":      PALLET_WEIGHT,
+      "Total kg":         (p.weight || 0).toFixed(1),
+      "Dim weight":       (p.dimWeight || 0).toFixed(2),
+      "CHW (kg)":         (p.chw || 0).toFixed(2),
+    }));
+
+    // Sheet 3: Summary
+    const summaryRows = [
+      { "Mục": "Flight",          "Giá trị": flightName },
+      { "Mục": "Mode",            "Giá trị": result.mode || "auto" },
+      { "Mục": "Pallet type",     "Giá trị": `${pdim.w}×${pdim.d}×${pdim.h} cm` },
+      { "Mục": "Gap",             "Giá trị": `${result.gap || 0} cm` },
+      { "Mục": "Total items",     "Giá trị": result.totalItems },
+      { "Mục": "Packed",          "Giá trị": result.totalPacked },
+      { "Mục": "Overflow",        "Giá trị": result.totalOverflow || 0 },
+      { "Mục": "Pallets",         "Giá trị": result.pallets.length },
+      { "Mục": "Stack density",   "Giá trị": `${result.utilization}%` },
+      { "Mục": "Total weight",    "Giá trị": `${result.totalWeight.toFixed(1)} kg` },
+      { "Mục": "Pallet weights",  "Giá trị": `+${PALLET_WEIGHT}kg × ${result.pallets.length} pallet = ${(PALLET_WEIGHT*result.pallets.length).toFixed(1)} kg` },
+      { "Mục": "Dim weight",      "Giá trị": `${result.dimWeight.toFixed(2)} kg` },
+      { "Mục": "Chargeable CHW",  "Giá trị": `${result.cw.toFixed(2)} kg` },
+      { "Mục": "Exported",        "Giá trị": new Date().toLocaleString("vi-VN") },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(loadingRows), "Loading list");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(palletRows),  "Pallet summary");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), "Summary");
+    XLSX.writeFile(wb, `pallet-${flightName}.xlsx`);
+  };
+
   const handleSaveFlight = async () => {
     if (!supabaseEnabled || !session) return;
     const name = saveFlightName.trim();
@@ -1343,6 +1424,13 @@ export default function App() {
                             }}
                             style={{ background:"#42a5f5",border:"none",color:"#fff",padding:"9px 14px",cursor:"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em" }}>
                             💾 Lưu
+                          </button>
+                        )}
+                        {result && (
+                          <button title="Xuất Excel (loading list + summary)" className="opt-secondary"
+                            onClick={handleExportExcel}
+                            style={{ background:"#10B981",border:"none",color:"#fff",padding:"9px 14px",cursor:"pointer",fontFamily:"'Space Grotesk'",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em" }}>
+                            📊 Excel
                           </button>
                         )}
                         <button className="opt-secondary" onClick={()=>{
