@@ -254,12 +254,11 @@ function bestPackForGroup(items, PW, PH, PD, gap, nRandom = 30) {
   }
   return best;
 }
-function packAllItems(items, palletDim, gap = 0) {
-  const { w:PW, h:PH, d:PD } = palletDim;
-  const sorted = [...items].sort(sortPackOrder);
-
-  // Phase 1: Sequential pack để xác định N pallets cần dùng.
-  let trialCount = 0, remaining = sorted, guard = 0;
+// Chạy đầy đủ 4 phase (trial → balanced → patch → fallback) với 1 sorted input
+// duy nhất. Trả về { states, packedIds, remainingFinal } để caller score & compare.
+function runOnePass(sortedItems, PW, PH, PD, gap) {
+  // Phase 1: Sequential trial để xác định N pallets.
+  let trialCount = 0, remaining = sortedItems, guard = 0;
   while (remaining.length > 0 && guard < 500) {
     guard++;
     const r = packOnePallet(remaining, PW, PH, PD, gap);
@@ -269,12 +268,10 @@ function packAllItems(items, palletDim, gap = 0) {
   }
   const N = Math.max(1, trialCount);
 
-  // Phase 2: Balanced pack với N pallets pre-init.
-  // Tiêu chí: kiện mới đặt vào pallet sao cho max-Y sau khi đặt thấp nhất, cùng
-  // điểm thì pallet thấp hơn thắng → các pallet cao đều, không có cái thấp tịt.
+  // Phase 2: Balanced pack.
   const states = [];
   for (let i = 0; i < N; i++) states.push(newPalletState(PW, PH, PD));
-  for (const item of sorted) {
+  for (const item of sortedItems) {
     let best = null;
     for (const s of states) {
       const p = findBestPlacement(item, s);
@@ -288,11 +285,10 @@ function packAllItems(items, palletDim, gap = 0) {
     if (best) applyPlacement(best.s, { ...item, x:best.p.x, y:best.p.y, z:best.p.z, w:best.p.w, h:best.p.h, d:best.p.d }, gap);
   }
 
-  // Phase 3: Patch — kiện chưa fit thì thử lại với support relaxed (0.4/0.3)
-  // tương đương sếp xếp tay với overhang nhẹ, tránh phát sinh pallet thừa.
+  // Phase 3: Patch leftover với support relaxed.
   const packedIds = new Set();
   states.forEach(s => s.packed.forEach(b => packedIds.add(b.id)));
-  const skipped = sorted.filter(it => !packedIds.has(it.id));
+  const skipped = sortedItems.filter(it => !packedIds.has(it.id));
   for (const item of skipped) {
     let best = null;
     for (const s of states) {
@@ -304,9 +300,9 @@ function packAllItems(items, palletDim, gap = 0) {
     if (best) applyPlacement(best.s, { ...item, x:best.p.x, y:best.p.y, z:best.p.z, w:best.p.w, h:best.p.h, d:best.p.d }, gap);
   }
 
-  // Phase 4: Nếu vẫn còn kiện chưa fit, mở pallet mới (rare case).
+  // Phase 4: Mở pallet mới nếu vẫn còn.
   states.forEach(s => s.packed.forEach(b => packedIds.add(b.id)));
-  let stillSkipped = sorted.filter(it => !packedIds.has(it.id));
+  let stillSkipped = sortedItems.filter(it => !packedIds.has(it.id));
   guard = 0;
   while (stillSkipped.length > 0 && guard < 10) {
     guard++;
@@ -319,13 +315,69 @@ function packAllItems(items, palletDim, gap = 0) {
     if (extra.packed.length === before) break;
     states.push(extra);
     extra.packed.forEach(b => packedIds.add(b.id));
-    stillSkipped = sorted.filter(it => !packedIds.has(it.id));
+    stillSkipped = sortedItems.filter(it => !packedIds.has(it.id));
+  }
+  const remainingFinal = sortedItems.filter(it => !packedIds.has(it.id));
+  return { states, remainingFinal };
+}
+
+// Tính tổng CHW (IATA + pallet base) cho các states packed — dùng để score
+// trong best-of-N. Thấp nhất là tối ưu phí ship.
+function scoreTotalCHW(states, PW, PD) {
+  let total = 0;
+  for (const s of states) {
+    if (s.packed.length === 0) continue;
+    const itemsKg = s.packed.reduce((sum, b) => sum + b.weight, 0);
+    const shipH = s.maxY + PALLET_BASE_HEIGHT;
+    const dim = (PW * shipH * PD) / VOL_DIVISOR;
+    total += Math.max(itemsKg + PALLET_WEIGHT, dim);
+  }
+  return total;
+}
+
+function packAllItems(items, palletDim, gap = 0) {
+  const { w:PW, h:PH, d:PD } = palletDim;
+
+  // Best-of-N: thử 6 sort + 15 random shuffle, chọn config có total CHW thấp nhất.
+  // Tối ưu CHW = giảm chi phí ship (không chỉ tối ưu số pallet).
+  const sorts = [
+    sortPackOrder,                                                                      // footprint DESC
+    (a,b) => b.width*b.height*b.depth - a.width*a.height*a.depth,                       // volume DESC
+    (a,b) => Math.max(b.width,b.height,b.depth) - Math.max(a.width,a.height,a.depth),   // max_dim DESC
+    (a,b) => Math.min(b.width,b.height,b.depth) - Math.min(a.width,a.height,a.depth),   // min_dim DESC
+    (a,b) => b.weight - a.weight,                                                       // weight DESC
+    (a,b) => maxFootprint(a) - maxFootprint(b),                                         // footprint ASC
+  ];
+
+  let bestResult = null;
+  let bestCHW = Infinity;
+  const consider = (arr) => {
+    const result = runOnePass(arr, PW, PH, PD, gap);
+    const chw = scoreTotalCHW(result.states, PW, PD);
+    // Ưu tiên fit hết items, sau đó CHW thấp nhất
+    const fitAll = result.remainingFinal.length === 0;
+    const bestFitAll = bestResult ? bestResult.remainingFinal.length === 0 : false;
+    if (!bestResult ||
+        (fitAll && !bestFitAll) ||
+        (fitAll === bestFitAll && chw < bestCHW)) {
+      bestResult = result; bestCHW = chw;
+    }
+  };
+  for (const sortFn of sorts) consider([...items].sort(sortFn));
+  const rand = mulberry32(items.length * 7919 + (items[0]?.id?.length || 0));
+  for (let i = 0; i < 15; i++) {
+    const arr = [...items];
+    for (let j = arr.length - 1; j > 0; j--) {
+      const k = Math.floor(rand() * (j+1));
+      [arr[j], arr[k]] = [arr[k], arr[j]];
+    }
+    consider(arr);
   }
 
+  const states = bestResult.states;
   const pallets = states.map(s => ({ packed: s.packed, overflow: [] }));
-  let remainingFinal = sorted.filter(it => !packedIds.has(it.id));
-  if (remainingFinal.length > 0 && pallets.length > 0) {
-    pallets[pallets.length - 1].overflow = remainingFinal;
+  if (bestResult.remainingFinal.length > 0 && pallets.length > 0) {
+    pallets[pallets.length - 1].overflow = bestResult.remainingFinal;
   }
 
   // CHW per pallet (IATA + base pallet): pallet thực tế khi ship gồm cả base gỗ
